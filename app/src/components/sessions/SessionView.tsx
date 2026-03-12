@@ -38,15 +38,6 @@ export default function SessionView() {
   const [error, setError] = useState<string | null>(null);
 
   const {
-    state: captureState,
-    audioLevel,
-    chunks,
-    start,
-    stop,
-    error: captureError,
-  } = useAudioCapture();
-
-  const {
     transcript: _transcript,
     isTranscribing,
     error: transcriptionError,
@@ -54,6 +45,14 @@ export default function SessionView() {
     stopTranscription,
     sendAudioChunk,
   } = useTranscription();
+
+  const {
+    state: captureState,
+    audioLevel,
+    start,
+    stop,
+    error: captureError,
+  } = useAudioCapture({ onChunk: sendAudioChunk });
 
   const {
     isGenerating,
@@ -67,7 +66,6 @@ export default function SessionView() {
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<{ sessionId: string; field: string; state: SerializedEditorState } | null>(null);
-  const lastChunkIndexRef = useRef(0);
 
   useEffect(() => {
     if (!activeSession?.patientId) {
@@ -76,15 +74,6 @@ export default function SessionView() {
     }
     db.getPatient(activeSession.patientId).then(setPatient).catch(() => setPatient(null));
   }, [activeSession?.patientId]);
-
-  // Forward new audio chunks to the sidecar as they arrive
-  useEffect(() => {
-    if (captureState !== "recording") return;
-    for (let i = lastChunkIndexRef.current; i < chunks.length; i++) {
-      sendAudioChunk(chunks[i]);
-    }
-    lastChunkIndexRef.current = chunks.length;
-  }, [chunks, captureState, sendAudioChunk]);
 
   // Save generated note to DB and update store
   useEffect(() => {
@@ -115,7 +104,7 @@ export default function SessionView() {
 
   const handleStartRecording = useCallback(async () => {
     if (!activeSession) return;
-    lastChunkIndexRef.current = 0;
+    setActiveTab("transcription");
     startTranscription(activeSession.id);
     await start();
   }, [activeSession, start, startTranscription]);

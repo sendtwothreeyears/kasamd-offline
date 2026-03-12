@@ -21,6 +21,10 @@ class PcmProcessor extends AudioWorkletProcessor {
     // Fractional position tracker for linear interpolation resampling
     this._resampleOffset = 0;
 
+    // DC offset removal state (single-pole HPF at ~20Hz)
+    this._dcPrev = 0;
+    this._dcPrevInput = 0;
+
     // Throttle level messages: accumulate RMS across blocks, emit every ~50ms
     this._levelSum = 0;
     this._levelCount = 0;
@@ -47,8 +51,17 @@ class PcmProcessor extends AudioWorkletProcessor {
     // Post RMS level for the UI meter
     this._postLevel(channel);
 
-    // Resample from native rate to 16kHz using linear interpolation
-    this._resample(channel);
+    if (this._resampleStep <= 1.0) {
+      // Audio is already at target rate (AudioContext created at 16kHz)
+      // — direct buffer with DC offset removal
+      for (let i = 0; i < channel.length; i++) {
+        this._buffer[this._buffered++] = this._removeDCOffset(channel[i]);
+        if (this._buffered >= CHUNK_SAMPLES) this._emitChunk();
+      }
+    } else {
+      // Fallback: resample from higher native rate (keep existing path)
+      this._resample(channel);
+    }
 
     return true;
   }
@@ -69,7 +82,7 @@ class PcmProcessor extends AudioWorkletProcessor {
       const b = idx + 1 < input.length ? input[idx + 1] : a;
       const sample = a + frac * (b - a);
 
-      this._buffer[this._buffered++] = sample;
+      this._buffer[this._buffered++] = this._removeDCOffset(sample);
 
       if (this._buffered >= CHUNK_SAMPLES) {
         this._emitChunk();
@@ -80,6 +93,17 @@ class PcmProcessor extends AudioWorkletProcessor {
 
     // Carry fractional remainder into the next process() call
     this._resampleOffset = offset - input.length;
+  }
+
+  /**
+   * Single-pole high-pass filter at ~20Hz to remove DC offset.
+   * y[n] = x[n] - x[n-1] + 0.998 * y[n-1]
+   */
+  _removeDCOffset(sample) {
+    const y = sample - this._dcPrevInput + 0.998 * this._dcPrev;
+    this._dcPrevInput = sample;
+    this._dcPrev = y;
+    return y;
   }
 
   /**
@@ -106,11 +130,15 @@ class PcmProcessor extends AudioWorkletProcessor {
 
   /**
    * Convert Float32 samples [-1, 1] to Int16 [-32768, 32767].
+   * Applies TPDF dither to prevent quantization artifacts in quiet passages.
    */
   _float32ToInt16(float32, length) {
     const int16 = new Int16Array(length);
+    const ditherAmt = 1.0 / 32768.0; // 1 LSB in float domain
     for (let i = 0; i < length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]));
+      // TPDF dither: triangular probability density function
+      const dither = (Math.random() + Math.random() - 1.0) * ditherAmt;
+      const s = Math.max(-1, Math.min(1, float32[i] + dither));
       int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     return int16;

@@ -2,6 +2,11 @@ import { useState, useRef, useCallback, useEffect } from "react";
 
 type CaptureState = "idle" | "recording" | "error";
 
+interface UseAudioCaptureOptions {
+  /** Called synchronously for every PCM chunk — bypasses React state batching. */
+  onChunk?: (chunk: Int16Array) => void;
+}
+
 interface UseAudioCaptureReturn {
   state: CaptureState;
   error: string | null;
@@ -11,7 +16,9 @@ interface UseAudioCaptureReturn {
   stop: () => Promise<void>;
 }
 
-export function useAudioCapture(): UseAudioCaptureReturn {
+export function useAudioCapture(options?: UseAudioCaptureOptions): UseAudioCaptureReturn {
+  const onChunkRef = useRef(options?.onChunk);
+  onChunkRef.current = options?.onChunk;
   const [state, setState] = useState<CaptureState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -44,19 +51,29 @@ export function useAudioCapture(): UseAudioCaptureReturn {
       setError(null);
       setChunks([]);
 
-      // Request microphone access
+      // Request raw microphone audio — disable browser DSP that distorts
+      // mel spectrogram features MedASR depends on (train/test mismatch).
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
           channelCount: 1,
         },
       });
       streamRef.current = stream;
 
-      // Create AudioContext and load worklet
-      const audioContext = new AudioContext();
+      // Create AudioContext at 16kHz — Chromium's SincResampler handles
+      // the native→16kHz conversion in native code (>90dB SNR), so the
+      // worklet receives audio already at the target sample rate.
+      const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
+
+      if (audioContext.sampleRate !== 16000) {
+        console.warn(
+          `AudioContext sample rate is ${audioContext.sampleRate}, expected 16000. Falling back to worklet resampling.`
+        );
+      }
 
       await audioContext.audioWorklet.addModule("/pcm-processor.js");
 
@@ -73,6 +90,7 @@ export function useAudioCapture(): UseAudioCaptureReturn {
         if (type === "chunk") {
           const pcm = event.data.pcm as Int16Array;
           console.log(`[useAudioCapture] PCM chunk: ${pcm.length} samples`);
+          onChunkRef.current?.(pcm);
           setChunks((prev) => [...prev, pcm]);
         } else if (type === "level") {
           // Clamp RMS to 0–1 range

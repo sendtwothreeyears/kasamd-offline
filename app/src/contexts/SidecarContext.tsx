@@ -18,6 +18,7 @@ const SidecarContext = createContext<SidecarContextValue | null>(null);
 
 export function SidecarProvider({ children }: { children: ReactNode }) {
   const clientRef = useRef<WebSocketClient | null>(null);
+  const handlersRef = useRef(new Set<MessageHandler>());
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("disconnected");
 
@@ -25,6 +26,14 @@ export function SidecarProvider({ children }: { children: ReactNode }) {
     const client = new WebSocketClient(SIDECAR_URL);
     clientRef.current = client;
     client.onStateChange(setConnectionState);
+
+    // Forward all client messages to registered handlers.
+    // Handlers are stored in a ref so they can be registered before the
+    // client exists (child effects fire before parent effects in React).
+    client.onMessage((data) => {
+      handlersRef.current.forEach((h) => h(data));
+    });
+
     client.connect();
 
     return () => {
@@ -42,7 +51,8 @@ export function SidecarProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const onMessage = useCallback((handler: MessageHandler) => {
-    return clientRef.current?.onMessage(handler) ?? (() => {});
+    handlersRef.current.add(handler);
+    return () => { handlersRef.current.delete(handler); };
   }, []);
 
   return (

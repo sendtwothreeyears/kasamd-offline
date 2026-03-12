@@ -48,7 +48,7 @@ export default function SessionTopBar({
         <AudioLevel level={audioLevel} visible={isRecording} />
         <RecordButton
           isRecording={isRecording}
-          disabled={isTranscribing || !sidecarConnected}
+          disabled={isTranscribing || (!isRecording && !sidecarConnected)}
           onStart={onStart}
           onStop={onStop}
         />
