@@ -3,7 +3,7 @@
  * Reusable across all three tabs — mount with different initialState per tab.
  */
 
-import { memo, useEffect } from "react";
+import { memo, useEffect, useRef } from "react";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -27,9 +27,11 @@ function LoadStatePlugin({
   editorState: SerializedEditorState | null;
 }) {
   const [editor] = useLexicalComposerContext();
+  const hasLoaded = useRef(false);
 
   useEffect(() => {
-    if (!editorState) return;
+    if (hasLoaded.current || !editorState) return;
+    hasLoaded.current = true;
     const state = editor.parseEditorState(editorState);
     editor.setEditorState(state);
   }, [editor, editorState]);
@@ -61,6 +63,26 @@ export default memo(function SessionEditor({
     namespace: "SessionEditor",
     nodes: EDITOR_NODES,
     editable: !readOnly,
+    theme: {
+      paragraph: "mb-2 text-base leading-normal text-gray-900",
+      heading: {
+        h1: "text-base font-bold mb-2 text-gray-900",
+        h2: "text-base font-bold mb-2 text-gray-900",
+        h3: "text-base font-bold mb-2 text-gray-900",
+      },
+      list: {
+        ul: "list-disc ml-6 mb-2",
+        ol: "list-decimal ml-6 mb-2",
+        listitem: "ml-0",
+      },
+      text: {
+        bold: "font-bold",
+        italic: "italic",
+        underline: "underline",
+      },
+      code: "bg-gray-100 px-2 py-1 rounded font-mono text-sm",
+      link: "text-blue-600 underline hover:text-blue-800",
+    },
     onError: (error: Error) => {
       console.error("SessionEditor error:", error);
     },
@@ -72,9 +94,9 @@ export default memo(function SessionEditor({
     }
   }
 
-  const editorClassName = "min-h-0 flex-1 overflow-auto px-4 py-3 text-sm text-gray-900 outline-none";
+  const editorClassName = "min-h-0 flex-1 overflow-auto px-4 py-3 max-w-[800px] font-[ui-sans-serif,system-ui,sans-serif] text-base text-gray-900 outline-none";
   const placeholderEl = (
-    <div className="pointer-events-none absolute top-0 left-0 px-4 py-3 text-sm text-gray-400">
+    <div className="pointer-events-none absolute top-0 left-0 px-4 py-3 text-base text-gray-400">
       {placeholder}
     </div>
   );

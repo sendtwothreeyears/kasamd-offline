@@ -221,8 +221,9 @@ export default function SessionView() {
     const text = await stopTranscription();
     if (text && activeSession) {
       try {
-        await db.updateSession(activeSession.id, { rawTranscript: text });
-        mergeActiveSession(activeSession.id, { rawTranscript: text });
+        const lexicalState = markdownToLexical(text);
+        await db.updateSession(activeSession.id, { rawTranscript: text, transcript: lexicalState });
+        mergeActiveSession(activeSession.id, { rawTranscript: text, transcript: lexicalState });
         if (!activeSession.notes) {
           generateNote(activeSession.id, text, "");
         }
@@ -278,7 +279,11 @@ export default function SessionView() {
   const initialState = noteIsStreaming
     ? streamPreview
     : ((activeSession[field] as SerializedEditorState | null) ?? null);
-  const isReadOnly = activeTab === "transcription" || (activeTab === "note" && isStreaming);
+  const isLiveTranscribing = captureState === "recording" || isTranscribing;
+  const hasCompletedTranscript = !!activeSession.rawTranscript && !isLiveTranscribing;
+  const isReadOnly =
+    (activeTab === "transcription" && !hasCompletedTranscript) ||
+    (activeTab === "note" && isStreaming);
 
   return (
     <div className="flex h-full flex-col">
@@ -335,14 +340,14 @@ export default function SessionView() {
           <label className="mb-1 block text-xs font-medium text-gray-500">
             Patient Context (read-only)
           </label>
-          <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 whitespace-pre-wrap">
+          <div className="max-w-[800px] rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-[ui-sans-serif,system-ui,sans-serif] text-base text-gray-700 whitespace-pre-wrap">
             {patient.context}
           </div>
         </div>
       )}
 
       <div className="min-h-0 flex-1 pt-2">
-        {activeTab === "transcription" ? (
+        {activeTab === "transcription" && isLiveTranscribing ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
             liveTranscript={liveTranscript}
