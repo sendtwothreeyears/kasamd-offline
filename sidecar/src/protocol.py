@@ -6,11 +6,14 @@ Client -> Sidecar (text):
     {"type": "generate_note", "session_id": "<uuid>", "transcript": "...", "template": "..."}
 
 Client -> Sidecar (binary):
-    Raw PCM Int16 audio frames (16 kHz, mono, 500 ms = 16 000 bytes)
+    Raw PCM Int16 audio frames (16 kHz, mono, 100 ms = 3 200 bytes)
 
 Sidecar -> Client (text):
-    {"type": "transcript",     "session_id": "<uuid>", "text": "...", "is_final": true}
-    {"type": "note_chunk",     "session_id": "<uuid>", "text": "..."}
+    {"type": "transcript",         "session_id": "<uuid>", "text": "...", "is_final": true}
+    {"type": "transcript_segment", "session_id": "<uuid>", "text": "...", "segment_index": N, "is_final": false}
+    {"type": "transcript_partial", "session_id": "<uuid>", "text": "...", "segment_index": N}
+    {"type": "transcript_final",   "session_id": "<uuid>", "text": "...", "is_final": true}
+    {"type": "note_chunk",         "session_id": "<uuid>", "text": "..."}
     {"type": "note",           "session_id": "<uuid>", "content": "...", "is_final": true}
     {"type": "note_progress",  "session_id": "<uuid>", "status": "generating"}
     {"type": "status",         "engine": "...", "status": "loading"|"ready"|"error", "message": "..."}
@@ -24,6 +27,9 @@ GENERATE_NOTE = "generate_note"
 
 # -- Outbound message types --
 TRANSCRIPT = "transcript"
+TRANSCRIPT_SEGMENT = "transcript_segment"
+TRANSCRIPT_PARTIAL = "transcript_partial"
+TRANSCRIPT_FINAL = "transcript_final"
 NOTE = "note"
 NOTE_CHUNK = "note_chunk"
 NOTE_PROGRESS = "note_progress"

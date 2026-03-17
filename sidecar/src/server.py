@@ -1,13 +1,24 @@
-"""WebSocket server for the Adwene sidecar — routes audio to ASR engine."""
+"""WebSocket server for the Adwene sidecar — routes audio to ASR engine.
+
+Supports two transcription modes:
+- **Streaming (live):** Audio chunks flow through Silero VAD. Each detected
+  utterance is transcribed immediately and sent as a `transcript_segment`.
+  On stop, a batch transcription of the full audio produces a `transcript_final`.
+- **Batch (legacy):** Full audio is transcribed on stop only (kept as fallback).
+"""
 
 import asyncio
 import json
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 import websockets
 
 from . import config, protocol
 from .engines.registry import create_asr_engine, create_note_engine
+from .vad import SileroVAD
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,14 +30,56 @@ logger = logging.getLogger("adwene-sidecar")
 _asr_engine = None
 _note_engine = None
 
+# Single-thread executor for all MLX operations. MLX Metal GPU calls are NOT
+# thread-safe — concurrent calls from the default ThreadPoolExecutor cause
+# corruption/crashes. This ensures only one MLX inference runs at a time.
+_mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+
 # Set once both engines are loaded; handler awaits this before processing.
 _engines_ready = asyncio.Event()
 
 # Connected clients — used for broadcasting status updates.
 _clients: set = set()
 
-# Per-connection audio buffers, keyed by session_id.
-_audio_buffers: dict[str, bytearray] = {}
+# -- Streaming session state --
+
+# Bytes of audio without a VAD segment before triggering fallback batch.
+_FALLBACK_SILENCE_BYTES = 5 * 16_000 * 2  # 5 seconds at 16kHz 16-bit mono
+
+# Max full_audio buffer size (~10 minutes). Beyond this we keep only the
+# tail, since batch final transcription of very long audio is impractical
+# on-device anyway and the streaming segments already captured the content.
+_MAX_FULL_AUDIO_BYTES = 10 * 60 * 16_000 * 2  # ~19.2 MB
+
+# Emit partial transcriptions every N ms while speech is ongoing.
+_PARTIAL_INTERVAL_MS = 500
+
+# Max audio (ms) fed to a partial transcription. Partials are interim results
+# so full-utterance context isn't needed. Capping this prevents O(duration)
+# feature extraction that would otherwise degrade as speech gets longer.
+_PARTIAL_MAX_AUDIO_MS = 10_000  # 10 seconds
+
+
+
+@dataclass
+class _StreamingSession:
+    """Per-session state for live streaming transcription."""
+
+    vad: SileroVAD = field(default_factory=SileroVAD)
+    full_audio: bytearray = field(default_factory=bytearray)
+    segment_texts: list[str] = field(default_factory=list)  # accumulated segment transcripts
+    segment_counter: int = 0
+    bytes_since_last_segment: int = 0
+    last_segment_time: float = field(default_factory=time.monotonic)
+    last_partial_time: float = field(default_factory=time.monotonic)
+    last_partial_speech_len: int = 0  # speech buffer size at last partial
+    partial_task: asyncio.Task | None = None
+    segment_generation: int = 0  # bumped on each segment emit
+    last_partial_text: str = ""  # reuse as segment text to avoid re-transcription
+
+
+# Active streaming sessions, keyed by session_id.
+_sessions: dict[str, _StreamingSession] = {}
 
 
 async def _send_json(ws, payload: dict) -> None:
@@ -36,11 +89,14 @@ async def _send_json(ws, payload: dict) -> None:
 async def _broadcast(payload: dict) -> None:
     """Send a message to all connected clients."""
     msg = json.dumps(payload)
+    closed = []
     for ws in list(_clients):
         try:
             await ws.send(msg)
         except websockets.exceptions.ConnectionClosed:
-            pass
+            closed.append(ws)
+    for ws in closed:
+        _clients.discard(ws)
 
 
 async def handler(websocket):
@@ -67,10 +123,82 @@ async def handler(websocket):
 
     try:
         async for message in websocket:
-            # --- Binary frame: append PCM audio to active session buffer ---
+            # --- Binary frame: feed to VAD + accumulate for batch ---
             if isinstance(message, bytes):
-                if session_id and session_id in _audio_buffers:
-                    _audio_buffers[session_id].extend(message)
+                if session_id and session_id in _sessions:
+                    sess = _sessions[session_id]
+                    # Accumulate for final batch reconciliation (capped)
+                    sess.full_audio.extend(message)
+                    if len(sess.full_audio) > _MAX_FULL_AUDIO_BYTES:
+                        excess = len(sess.full_audio) - _MAX_FULL_AUDIO_BYTES
+                        del sess.full_audio[:excess]
+                    sess.bytes_since_last_segment += len(message)
+
+                    # Feed to VAD — returns completed utterances
+                    utterances = sess.vad.process_chunk(message)
+
+                    for utterance_pcm in utterances:
+                        # Cancel any in-flight partial — segment takes priority
+                        if sess.partial_task and not sess.partial_task.done():
+                            sess.partial_task.cancel()
+                            try:
+                                await sess.partial_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            sess.partial_task = None
+
+                        dur_ms = len(utterance_pcm) / (16_000 * 2) * 1000
+                        logger.info(
+                            "VAD segment emitted: %.0fms for session %s",
+                            dur_ms, session_id,
+                        )
+                        sess.bytes_since_last_segment = 0
+                        sess.last_segment_time = time.monotonic()
+                        sess.last_partial_speech_len = 0
+                        sess.segment_generation += 1
+                        await _transcribe_segment(
+                            websocket, session_id, sess, utterance_pcm
+                        )
+
+                    # Launch non-blocking partial transcript while speech ongoing
+                    if not utterances:
+                        _maybe_launch_partial(
+                            websocket, session_id, sess
+                        )
+
+                    # Graceful degradation: if no segments for >5s of audio,
+                    # do a fallback batch transcription of recent audio
+                    if sess.bytes_since_last_segment >= _FALLBACK_SILENCE_BYTES:
+                        # Cancel any in-flight partial to avoid concurrent MLX calls
+                        if sess.partial_task and not sess.partial_task.done():
+                            sess.partial_task.cancel()
+                            try:
+                                await sess.partial_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            sess.partial_task = None
+                        sess.segment_generation += 1  # invalidate in-flight partial
+                        # Clear partial text — fallback must transcribe its own
+                        # audio, not reuse stale partial text from VAD buffer
+                        sess.last_partial_text = ""
+                        logger.info(
+                            "No VAD segments for %.1fs — fallback batch for session %s",
+                            sess.bytes_since_last_segment / (16_000 * 2),
+                            session_id,
+                        )
+                        await _transcribe_segment(
+                            websocket,
+                            session_id,
+                            sess,
+                            bytes(sess.full_audio[-sess.bytes_since_last_segment:]),
+                        )
+                        sess.bytes_since_last_segment = 0
+                        sess.last_segment_time = time.monotonic()
+                        # Clear VAD speech buffer so next partial starts fresh,
+                        # but preserve LSTM state so VAD can continue detecting
+                        # speech without a re-convergence gap.
+                        sess.vad.clear_speech_buffer()
+                        sess.last_partial_speech_len = 0
                 else:
                     logger.warning("Binary frame received with no active session")
                 continue
@@ -95,47 +223,71 @@ async def handler(websocket):
                         "message": "transcribe_start requires session_id",
                     })
                     continue
-                if session_id in _audio_buffers:
+                if session_id in _sessions:
+                    old = _sessions[session_id]
+                    if old.partial_task and not old.partial_task.done():
+                        old.partial_task.cancel()
+                        try:
+                            await old.partial_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    old.full_audio.clear()
+                    old.vad = None  # type: ignore[assignment]
                     logger.warning(
-                        "Overwriting existing buffer for session %s", session_id
+                        "Overwriting existing session for %s", session_id
                     )
-                _audio_buffers[session_id] = bytearray()
-                logger.info("Transcription started for session %s", session_id)
+                _sessions[session_id] = _StreamingSession()
+                logger.info("Streaming transcription started for session %s", session_id)
 
             elif msg_type == protocol.TRANSCRIBE_STOP:
                 sid = data.get("session_id", session_id)
-                buf = _audio_buffers.pop(sid, None)
-                if buf is None or len(buf) == 0:
+                sess = _sessions.pop(sid, None)
+                if sess is None or len(sess.full_audio) == 0:
                     await _send_json(websocket, {
                         "type": protocol.ERROR,
                         "message": f"No audio data for session {sid}",
                     })
                     continue
 
+                # Cancel any in-flight partial before final processing
+                if sess.partial_task and not sess.partial_task.done():
+                    sess.partial_task.cancel()
+                    try:
+                        await sess.partial_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    sess.partial_task = None
+
                 logger.info(
-                    "Transcription stop for session %s — %d bytes of audio",
-                    sid, len(buf),
+                    "Transcription stop for session %s — %d bytes, %d segments",
+                    sid, len(sess.full_audio), sess.segment_counter,
                 )
+
+                # Flush any in-progress VAD utterance
+                trailing = sess.vad.flush()
+                if trailing:
+                    await _transcribe_segment(websocket, sid, sess, trailing)
 
                 # Wait for engines if they're still loading
                 if not _engines_ready.is_set():
                     logger.info("Waiting for engines to finish loading…")
                     await _engines_ready.wait()
 
-                try:
-                    text = await _asr_engine.transcribe(bytes(buf))
-                    await _send_json(websocket, {
-                        "type": protocol.TRANSCRIPT,
-                        "session_id": sid,
-                        "text": text,
-                        "is_final": True,
-                    })
-                except Exception as exc:
-                    logger.exception("Transcription failed for session %s", sid)
-                    await _send_json(websocket, {
-                        "type": protocol.ERROR,
-                        "message": str(exc),
-                    })
+                # Build final transcript from accumulated segments.
+                # Previous approach re-transcribed the full audio (O(duration²)
+                # memory for feature extraction — ~500MB for 10 min). Segments
+                # were already transcribed with beam search during streaming,
+                # so concatenation gives equivalent quality instantly.
+                sess.full_audio.clear()  # free audio buffer
+                final_text = " ".join(sess.segment_texts)
+                sess.segment_texts.clear()
+
+                await _send_json(websocket, {
+                    "type": protocol.TRANSCRIPT_FINAL,
+                    "session_id": sid,
+                    "text": final_text,
+                    "is_final": True,
+                })
 
                 session_id = None
 
@@ -197,10 +349,119 @@ async def handler(websocket):
         pass
     finally:
         _clients.discard(websocket)
-        # Clean up any orphaned buffer
-        if session_id and session_id in _audio_buffers:
-            del _audio_buffers[session_id]
+        # Clean up any orphaned session
+        if session_id and session_id in _sessions:
+            sess = _sessions.pop(session_id)
+            if sess.partial_task and not sess.partial_task.done():
+                sess.partial_task.cancel()
+                try:
+                    await sess.partial_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            # Release VAD ONNX session
+            sess.vad = None  # type: ignore[assignment]
+            sess.full_audio.clear()
         logger.info("Client disconnected: %s", remote)
+
+
+def _maybe_launch_partial(
+    ws, session_id: str, sess: _StreamingSession
+) -> None:
+    """Launch a non-blocking partial transcription if conditions are met.
+
+    Fires as a background task so the audio processing loop is never stalled.
+    Only one partial runs at a time per session — if the previous is still
+    in-flight, this call is a no-op.
+    """
+    if not _engines_ready.is_set():
+        return
+
+    # One partial at a time — skip if previous is still running
+    if sess.partial_task and not sess.partial_task.done():
+        return
+
+    now = time.monotonic()
+    elapsed_ms = (now - sess.last_partial_time) * 1000
+    if elapsed_ms < _PARTIAL_INTERVAL_MS:
+        return
+
+    speech_pcm = sess.vad.peek_speech(max_tail_ms=_PARTIAL_MAX_AUDIO_MS)
+    if speech_pcm is None:
+        return
+
+    # Only transcribe if we have new audio since last partial
+    if len(speech_pcm) <= sess.last_partial_speech_len:
+        return
+
+    # Snapshot the generation counter to detect stale results
+    gen = sess.segment_generation
+
+    async def _do_partial():
+        try:
+            text = await _asr_engine.transcribe(speech_pcm)
+            # Discard if a segment was emitted while we were transcribing
+            if sess.segment_generation != gen:
+                return
+            if text.strip():
+                sess.last_partial_time = time.monotonic()
+                sess.last_partial_speech_len = len(speech_pcm)
+                sess.last_partial_text = text
+                await _send_json(ws, {
+                    "type": protocol.TRANSCRIPT_PARTIAL,
+                    "session_id": session_id,
+                    "text": text,
+                    "segment_index": sess.segment_counter,
+                })
+        except asyncio.CancelledError:
+            pass  # segment took priority — expected
+        except Exception:
+            logger.exception(
+                "Partial transcription failed for session %s", session_id
+            )
+
+    sess.partial_task = asyncio.create_task(_do_partial())
+
+
+async def _transcribe_segment(
+    ws, session_id: str, sess: _StreamingSession, utterance_pcm: bytes
+) -> None:
+    """Transcribe a single VAD utterance and send as transcript_segment.
+
+    If a partial transcription already covered this speech window, reuse
+    that text instead of re-transcribing — it had full acoustic context
+    and produces more coherent output.
+    """
+    if not _engines_ready.is_set():
+        return  # Skip segments while engines are loading
+
+    try:
+        # Prefer the last partial's text if available — it was transcribed
+        # from the full speech buffer and has better context than re-transcribing
+        # just the utterance audio.
+        if sess.last_partial_text:
+            text = sess.last_partial_text
+            sess.last_partial_text = ""
+        else:
+            text = await _asr_engine.transcribe(utterance_pcm)
+
+        if text.strip():
+            idx = sess.segment_counter
+            sess.segment_counter += 1
+            sess.segment_texts.append(text)
+            await _send_json(ws, {
+                "type": protocol.TRANSCRIPT_SEGMENT,
+                "session_id": session_id,
+                "text": text,
+                "segment_index": idx,
+                "is_final": False,
+            })
+    except Exception as exc:
+        logger.exception(
+            "Segment transcription failed for session %s (segment %d)",
+            session_id,
+            sess.segment_counter,
+        )
+
 
 
 async def _load_engines() -> None:

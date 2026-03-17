@@ -81,12 +81,14 @@ export default function SessionView() {
   );
 
   const {
-    transcript: _transcript,
+    liveTranscript,
+    finalTranscript,
     isTranscribing,
     error: transcriptionError,
     startTranscription,
     stopTranscription,
     sendAudioChunk,
+    reset: resetTranscription,
   } = useTranscription();
 
   const {
@@ -137,7 +139,8 @@ export default function SessionView() {
     setStreamPreview(null);
     setConfirmRegenerate(false);
     setConfirmDelete(false);
-  }, [activeSession?.id]);
+    resetTranscription();
+  }, [activeSession?.id, resetTranscription]);
 
   useEffect(() => {
     if (!activeSession?.patientId) {
@@ -342,7 +345,10 @@ export default function SessionView() {
         {activeTab === "transcription" ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
+            liveTranscript={liveTranscript}
+            finalTranscript={finalTranscript}
             isTranscribing={isTranscribing}
+            isRecording={captureState === "recording"}
           />
         ) : (
           <SessionEditor

@@ -37,8 +37,9 @@ class MedGemmaEngine(NoteEngine):
             raise RuntimeError("MedGemma engine not loaded — call load() first")
 
         loop = asyncio.get_running_loop()
+        from ..server import _mlx_executor
         return await asyncio.wait_for(
-            loop.run_in_executor(None, self._generate_sync, transcript, template),
+            loop.run_in_executor(_mlx_executor, self._generate_sync, transcript, template),
             timeout=GENERATE_TIMEOUT_S,
         )
 
@@ -103,7 +104,8 @@ class MedGemmaEngine(NoteEngine):
                     loop.call_soon_threadsafe(queue.put_nowait, response.text)
             loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
-        future = loop.run_in_executor(None, _stream)
+        from ..server import _mlx_executor
+        future = loop.run_in_executor(_mlx_executor, _stream)
 
         try:
             while True:

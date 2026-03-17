@@ -13,10 +13,20 @@ dependencies = [
     "camel-kenlm",
     "anthropic>=0.84.0",
     "google-genai>=1.67.0",
+    "onnxruntime>=1.24",
 ]
 
 [tool.uv]
 prerelease = "allow"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [project.scripts]
 adwene-sidecar = "sidecar.src.server:main"

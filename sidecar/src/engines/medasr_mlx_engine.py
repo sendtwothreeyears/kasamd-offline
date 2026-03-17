@@ -72,7 +72,10 @@ class MedASRMLXEngine(ASREngine):
         audio_float = pcm_int16.astype(np.float32) / 32768.0
 
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(None, self._transcribe_sync, audio_float)
+        # Use the dedicated MLX executor to prevent concurrent Metal GPU calls.
+        # Imported here to avoid circular dependency at module level.
+        from ..server import _mlx_executor
+        text = await loop.run_in_executor(_mlx_executor, self._transcribe_sync, audio_float)
         return text
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
