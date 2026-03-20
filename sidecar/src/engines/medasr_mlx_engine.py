@@ -103,6 +103,7 @@ class MedASRMLXEngine(ASREngine):
                 "Transcribe: inference=%.0fms, beam_decode=%.0fms",
                 t_inference * 1000, t_decode * 1000,
             )
+            mx.synchronize()  # Flush Metal command buffers before releasing executor
             return text
 
         t1 = time.perf_counter()
@@ -112,6 +113,7 @@ class MedASRMLXEngine(ASREngine):
             "Transcribe: inference=%.0fms, greedy_decode=%.0fms",
             t_inference * 1000, t_decode * 1000,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
         return text
 
     def _decode_beam_search(self, logits: mx.array) -> str:
@@ -157,7 +159,9 @@ class MedASRMLXEngine(ASREngine):
         features_mx = mx.array(features[np.newaxis, :, :])
         logits = self._model(features_mx)
         logprobs = nn.log_softmax(logits, axis=-1)
-        return np.array(logprobs[0]).astype(np.float16)
+        result = np.array(logprobs[0]).astype(np.float16)
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
+        return result
 
     def decode_logprobs(
         self,

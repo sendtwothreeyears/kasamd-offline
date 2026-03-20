@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+import mlx.core as mx
+
 from .. import config
 from ..prompts import SYSTEM_PROMPT, TITLE_PROMPT
 from .base import NoteEngine
@@ -79,6 +81,7 @@ class MedGemmaEngine(NoteEngine):
             repetition_context_size=config.MEDGEMMA_REPETITION_CONTEXT_SIZE,
             top_p=config.MEDGEMMA_TOP_P,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
 
         # Post-hoc repetition detection
         from ..repetition_detector import RepetitionDetector
@@ -180,6 +183,7 @@ class MedGemmaEngine(NoteEngine):
                 if trailing:
                     loop.call_soon_threadsafe(queue.put_nowait, trailing)
 
+            mx.synchronize()  # Flush Metal command buffers before releasing executor
             loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
         from ..server import _mlx_executor
@@ -224,6 +228,7 @@ class MedGemmaEngine(NoteEngine):
             temperature=config.MEDGEMMA_TEMPERATURE,
             top_p=config.MEDGEMMA_TOP_P,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
         return result.text
 
     async def unload(self) -> None:

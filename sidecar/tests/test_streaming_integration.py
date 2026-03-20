@@ -493,6 +493,47 @@ class TestTitleGeneration:
         assert len(title_msg["title"].split()) <= 5
         await ws.close()
 
+    async def test_stop_then_immediate_title_no_crash(self, ws_server):
+        """Regression test for KAS-287: stop recording then immediately request title.
+
+        This reproduces the race where generate_title could interleave with
+        retranscription chunks via the MLX executor, causing a Metal GPU crash.
+        """
+        ws = await _connect(ws_server)
+        await _recv_json(ws)  # status
+
+        # Start a transcription session and send some audio
+        await ws.send(json.dumps({
+            "type": protocol.TRANSCRIBE_START,
+            "session_id": "race-1",
+        }))
+        for _ in range(5):
+            await ws.send(_speech_like(200))
+            await asyncio.sleep(0.01)
+
+        # Stop transcription (triggers retranscribe in background)
+        await ws.send(json.dumps({
+            "type": protocol.TRANSCRIBE_STOP,
+            "session_id": "race-1",
+        }))
+
+        # IMMEDIATELY request title — this is the race window
+        await ws.send(json.dumps({
+            "type": protocol.GENERATE_TITLE,
+            "session_id": "race-1",
+            "transcript": "Patient presents with headache for three days.",
+        }))
+
+        msgs = await _drain_messages(ws, timeout=5.0)
+        types = [m["type"] for m in msgs]
+
+        # Should get a title back without crashing
+        assert protocol.TITLE in types, f"Expected title response, got types: {types}"
+        # Should NOT have an error from the race
+        error_msgs = [m for m in msgs if m["type"] == protocol.ERROR]
+        assert len(error_msgs) == 0, f"Unexpected errors: {error_msgs}"
+        await ws.close()
+
     async def test_generate_title_without_transcript_returns_error(self, ws_server):
         ws = await _connect(ws_server)
         await _recv_json(ws)  # status

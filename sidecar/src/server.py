@@ -38,6 +38,12 @@ _note_engine = None
 # corruption/crashes. This ensures only one MLX inference runs at a time.
 _mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
+# Async lock for logical GPU operation serialization. The executor serializes
+# individual callables, but multi-step operations (e.g. chunked retranscription)
+# release the executor between steps, allowing other GPU work to interleave.
+# This lock prevents that interleaving. See KAS-287 for details.
+_mlx_lock = asyncio.Lock()
+
 # Set once both engines are loaded; handler awaits this before processing.
 _engines_ready = asyncio.Event()
 
@@ -164,23 +170,24 @@ async def _retranscribe(
 
         t0 = time.perf_counter()
 
-        while f_start < n_total_frames:
-            # Check cooperative cancellation between chunks.
-            if _retranscribe_cancel.get(session_id, False):
-                logger.info("Retranscribe cancelled for session %s", session_id)
-                return
+        async with _mlx_lock:
+            while f_start < n_total_frames:
+                # Check cooperative cancellation between chunks.
+                if _retranscribe_cancel.get(session_id, False):
+                    logger.info("Retranscribe cancelled for session %s", session_id)
+                    return
 
-            f_end = min(f_start + frames_per_chunk, n_total_frames)
-            audio_start = f_start * hop_length
-            audio_end = (f_end - 1) * hop_length + win_length
-            chunk_audio = audio_float[audio_start:audio_end]
+                f_end = min(f_start + frames_per_chunk, n_total_frames)
+                audio_start = f_start * hop_length
+                audio_end = (f_end - 1) * hop_length + win_length
+                chunk_audio = audio_float[audio_start:audio_end]
 
-            # Run encoder on this chunk via the MLX executor.
-            logprobs = await loop.run_in_executor(
-                _mlx_executor, engine._encode_chunk_sync, chunk_audio,
-            )
-            logprob_parts.append(logprobs)
-            f_start = f_end
+                # Run encoder on this chunk via the MLX executor.
+                logprobs = await loop.run_in_executor(
+                    _mlx_executor, engine._encode_chunk_sync, chunk_audio,
+                )
+                logprob_parts.append(logprobs)
+                f_start = f_end
 
         # Check cancellation before the (potentially expensive) decode.
         if _retranscribe_cancel.get(session_id, False):
@@ -506,15 +513,16 @@ async def handler(websocket):
 
                 try:
                     full_text = ""
-                    async for chunk in _note_engine.generate_stream(
-                        transcript, template, context
-                    ):
-                        full_text += chunk
-                        await _send_json(websocket, {
-                            "type": protocol.NOTE_CHUNK,
-                            "session_id": sid,
-                            "text": chunk,
-                        })
+                    async with _mlx_lock:
+                        async for chunk in _note_engine.generate_stream(
+                            transcript, template, context
+                        ):
+                            full_text += chunk
+                            await _send_json(websocket, {
+                                "type": protocol.NOTE_CHUNK,
+                                "session_id": sid,
+                                "text": chunk,
+                            })
 
                     await _send_json(websocket, {
                         "type": protocol.NOTE,
@@ -548,7 +556,8 @@ async def handler(websocket):
                     await _engines_ready.wait()
 
                 try:
-                    title = await _note_engine.generate_title(transcript)
+                    async with _mlx_lock:
+                        title = await _note_engine.generate_title(transcript)
                     # Strip whitespace and truncate to ~5 words
                     title = " ".join(title.strip().split()[:5])
                     await _send_json(websocket, {
@@ -687,7 +696,8 @@ def _maybe_launch_partial(
 
     async def _do_partial():
         try:
-            text = await _asr_engine.transcribe(speech_pcm)
+            async with _mlx_lock:
+                text = await _asr_engine.transcribe(speech_pcm)
             # Discard if a segment was emitted while we were transcribing
             if sess.segment_generation != gen:
                 return
@@ -731,7 +741,8 @@ async def _transcribe_segment(
             text = sess.last_partial_text
             sess.last_partial_text = ""
         else:
-            text = await _asr_engine.transcribe(utterance_pcm)
+            async with _mlx_lock:
+                text = await _asr_engine.transcribe(utterance_pcm)
 
         if text.strip():
             idx = sess.segment_counter
