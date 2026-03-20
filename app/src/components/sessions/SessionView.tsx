@@ -441,11 +441,17 @@ export default function SessionView() {
   const handleStartRecording = useCallback(async () => {
     if (!activeSession) return;
     setActiveTab("transcription");
+
+    // Clear stale transcript so note generation cannot use the old one
+    // while the new recording is in progress.
+    await db.updateSession(activeSession.id, { rawTranscript: null, transcript: null });
+    mergeActiveSession(activeSession.id, { rawTranscript: null, transcript: null });
+
     const mode = getLiveTranscriptionEnabled() ? "live" : "batch";
     startTranscription(activeSession.id, mode);
     startTimer();
     await start();
-  }, [activeSession, start, startTranscription, startTimer]);
+  }, [activeSession, start, startTranscription, startTimer, mergeActiveSession]);
 
   const handleStopRecording = useCallback(async () => {
     stopTimer();
