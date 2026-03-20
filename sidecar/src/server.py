@@ -48,10 +48,10 @@ _clients: set = set()
 # Bytes of audio without a VAD segment before triggering fallback batch.
 _FALLBACK_SILENCE_BYTES = 5 * 16_000 * 2  # 5 seconds at 16kHz 16-bit mono
 
-# Max full_audio buffer size (~10 minutes). Beyond this we keep only the
-# tail, since batch final transcription of very long audio is impractical
-# on-device anyway and the streaming segments already captured the content.
-_MAX_FULL_AUDIO_BYTES = 10 * 60 * 16_000 * 2  # ~19.2 MB
+# Max full_audio buffer size.  Configured via MAX_AUDIO_BUFFER_MB (default
+# 60 MB ≈ 30 min at 16 kHz 16-bit mono).  The buffer is retained after
+# recording stops so the async re-transcription pass can use it.
+_MAX_FULL_AUDIO_BYTES = int(config.MAX_AUDIO_BUFFER_MB * 1024 * 1024)
 
 # Emit partial transcriptions every N ms while speech is ongoing.
 _PARTIAL_INTERVAL_MS = 500

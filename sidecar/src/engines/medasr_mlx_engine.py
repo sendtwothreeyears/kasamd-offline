@@ -296,19 +296,21 @@ def _extract_features(
 
     Matches LasrFeatureExtractor._torch_extract_fbank_features().
     """
-    # Symmetric Hann window (periodic=False), matching torch.hann_window
-    window = np.hanning(win_length).astype(np.float64)
-    audio_f64 = audio.astype(np.float64)
+    # Symmetric Hann window (periodic=False), matching torch.hann_window.
+    # float32 intermediates halve peak memory vs float64 with negligible
+    # precision impact on mel-spectrogram computation.
+    window = np.hanning(win_length).astype(np.float32)
+    audio_f32 = audio.astype(np.float32)
 
     # Unfold audio into overlapping frames
-    n_frames = 1 + (len(audio_f64) - win_length) // hop_length
+    n_frames = 1 + (len(audio_f32) - win_length) // hop_length
     if n_frames <= 0:
         return np.zeros((1, mel_filters.shape[1]), dtype=np.float32)
 
     frames = np.lib.stride_tricks.as_strided(
-        audio_f64,
+        audio_f32,
         shape=(n_frames, win_length),
-        strides=(hop_length * audio_f64.strides[0], audio_f64.strides[0]),
+        strides=(hop_length * audio_f32.strides[0], audio_f32.strides[0]),
     )
 
     # Apply window and compute FFT

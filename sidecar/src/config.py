@@ -32,6 +32,12 @@ BEAM_WIDTH: int = int(os.getenv("BEAM_WIDTH", "8"))
 USE_LM: bool = os.getenv("USE_LM", "true").lower() == "true"
 HOTWORD_WEIGHT: float = float(os.getenv("HOTWORD_WEIGHT", "10.0"))
 
+# -- Audio buffer --
+# Maximum audio buffer size in megabytes.  Determines how much raw PCM audio
+# the sidecar retains during a streaming session.  Larger values allow
+# full-audio re-transcription of longer recordings after stop.
+MAX_AUDIO_BUFFER_MB: float = float(os.getenv("MAX_AUDIO_BUFFER_MB", "60"))
+
 # -- Hotwords --
 # Words/phrases boosted during beam search decoding to improve recognition
 # of commonly mis-transcribed terms (numbers, ages, vitals, etc.)
