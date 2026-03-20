@@ -60,6 +60,10 @@ interface AppState {
   showSessionForm: boolean;
   openSessionForm: () => void;
   closeSessionForm: () => void;
+
+  // Entity highlight toggle (note tab)
+  showEntityHighlights: boolean;
+  toggleEntityHighlights: () => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -71,7 +75,12 @@ export const useAppStore = create<AppState>((set) => ({
   setScribePanelOpen: (open) => set({ scribePanelOpen: open }),
 
   sidebarCollapsed: false,
-  toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  toggleSidebar: () =>
+    set((state) => ({
+      sidebarCollapsed: !state.sidebarCollapsed,
+      // Close the scribe panel when collapsing the sidebar
+      ...(state.sidebarCollapsed ? {} : { scribePanelOpen: false }),
+    })),
 
   providerId: null,
   setProviderId: (id) => set({ providerId: id }),
@@ -116,4 +125,7 @@ export const useAppStore = create<AppState>((set) => ({
   showSessionForm: false,
   openSessionForm: () => set({ showSessionForm: true }),
   closeSessionForm: () => set({ showSessionForm: false }),
+
+  showEntityHighlights: false,
+  toggleEntityHighlights: () => set((state) => ({ showEntityHighlights: !state.showEntityHighlights })),
 }));

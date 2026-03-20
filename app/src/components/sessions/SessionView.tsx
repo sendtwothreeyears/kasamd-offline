@@ -17,6 +17,8 @@ import { useNoteGeneration } from "../../hooks/useNoteGeneration";
 import { useSidecar } from "../../contexts/SidecarContext";
 import { useTextExtraction } from "../../hooks/useTextExtraction";
 import { usePdfExport } from "../../hooks/usePdfExport";
+import { useSmoothStream } from "../../hooks/useSmoothStream";
+import { getLiveTranscriptionEnabled } from "../settings/TranscriptionSettingsPane";
 import { markdownToLexical } from "../../lib/markdown-to-lexical";
 import { lexicalToHtml } from "../../lib/lexical-to-html";
 import ContextAttachments, { type AttachmentWithStatus } from "./ContextAttachments";
@@ -72,6 +74,8 @@ export default function SessionView() {
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const mergeActiveSession = useAppStore((s) => s.mergeActiveSession);
   const providerId = useAppStore((s) => s.providerId);
+  const showEntityHighlights = useAppStore((s) => s.showEntityHighlights);
+  const toggleEntityHighlights = useAppStore((s) => s.toggleEntityHighlights);
 
   const [patient, setPatient] = useState<Patient | null>(null);
   const [activeTab, setActiveTab] = useState<SessionTab>("context");
@@ -104,6 +108,8 @@ export default function SessionView() {
     liveTranscript,
     finalTranscript,
     isTranscribing,
+    isRefining,
+    refinedTranscript,
     error: transcriptionError,
     startTranscription,
     stopTranscription,
@@ -137,6 +143,7 @@ export default function SessionView() {
   const { connectionState, send, onMessage } = useSidecar();
   const { extractText } = useTextExtraction();
   const { generatePdf } = usePdfExport();
+  const { smoothText, appendChunk, flush: flushSmooth, reset: resetSmooth } = useSmoothStream();
   const sidecarConnected = connectionState === "connected";
 
   const handleSelectDevice = useCallback(
@@ -151,8 +158,27 @@ export default function SessionView() {
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<{ sessionId: string; field: string; state: SerializedEditorState } | null>(null);
-  const streamingTextRef = useRef(streamingText);
-  streamingTextRef.current = streamingText;
+
+  // Feed raw streaming text into the smooth buffer
+  useEffect(() => {
+    if (isStreaming && streamingText) {
+      appendChunk(streamingText);
+    }
+  }, [isStreaming, streamingText, appendChunk]);
+
+  // Reset smooth buffer on stream start, flush on stream end
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (isStreaming && !wasStreamingRef.current) {
+      resetSmooth();
+    } else if (!isStreaming && wasStreamingRef.current) {
+      flushSmooth();
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, resetSmooth, flushSmooth]);
+
+  const smoothTextRef = useRef(smoothText);
+  smoothTextRef.current = smoothText;
 
   // Reset tab and local state when switching sessions
   useEffect(() => {
@@ -236,14 +262,16 @@ export default function SessionView() {
     return combined.length > 4000 ? combined.slice(0, 4000) + "\n[context truncated]" : combined;
   }, [patient, activeSession, attachments]);
 
-  // Load templates for note generation selector
+  // Load templates for note generation selector, respecting provider's default
   useEffect(() => {
     if (!providerId) return;
-    db.listTemplates(providerId).then((list) => {
+    Promise.all([db.listTemplates(providerId), db.getProvider()]).then(([list, provider]) => {
       setTemplates(list);
-      // Auto-select first template if none selected
+      // Use provider's default template if set, otherwise fall back to first
       if (!selectedTemplateId && list.length > 0) {
-        setSelectedTemplateId(list[0].id);
+        const defaultId = provider?.defaultTemplateId;
+        const hasDefault = defaultId && list.some((t) => t.id === defaultId);
+        setSelectedTemplateId(hasDefault ? defaultId : list[0].id);
       }
     }).catch(() => setTemplates([]));
   }, [providerId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -335,9 +363,9 @@ export default function SessionView() {
     }
   }, [attachments]);
 
-  // Throttled streaming preview: convert markdown → Lexical at a fixed interval
-  // while streaming. Uses a ref so the interval always reads the latest text
-  // without re-running the effect on every chunk (which killed the old debounce).
+  // Throttled streaming preview: convert smoothed text → Lexical at a fixed
+  // interval while streaming. Uses smoothTextRef so the interval reads the
+  // latest smoothed output without re-running on every rAF update.
   useEffect(() => {
     if (!isStreaming) {
       setStreamPreview(null);
@@ -345,7 +373,7 @@ export default function SessionView() {
     }
 
     const tick = () => {
-      const text = streamingTextRef.current;
+      const text = smoothTextRef.current;
       if (text) {
         try {
           setStreamPreview(markdownToLexical(text));
@@ -378,6 +406,24 @@ export default function SessionView() {
     });
   }, [activeSession, mergeActiveSession, onNoteGenerated]);
 
+  // Persist refined transcript to DB so note generation uses the best version
+  useEffect(() => {
+    if (!refinedTranscript || !activeSession) return;
+    try {
+      const lexicalState = markdownToLexical(refinedTranscript);
+      db.updateSession(activeSession.id, {
+        rawTranscript: refinedTranscript,
+        transcript: lexicalState,
+      });
+      mergeActiveSession(activeSession.id, {
+        rawTranscript: refinedTranscript,
+        transcript: lexicalState,
+      });
+    } catch (err) {
+      console.error("Failed to persist refined transcript:", err);
+    }
+  }, [refinedTranscript, activeSession, mergeActiveSession]);
+
   // Flush pending save on unmount
   useEffect(() => {
     return () => {
@@ -395,7 +441,8 @@ export default function SessionView() {
   const handleStartRecording = useCallback(async () => {
     if (!activeSession) return;
     setActiveTab("transcription");
-    startTranscription(activeSession.id);
+    const mode = getLiveTranscriptionEnabled() ? "live" : "batch";
+    startTranscription(activeSession.id, mode);
     startTimer();
     await start();
   }, [activeSession, start, startTranscription, startTimer]);
@@ -718,7 +765,7 @@ export default function SessionView() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 pt-2">
+      <div className={`min-h-0 flex-1 pt-2${!showEntityHighlights ? " entity-highlights-off" : ""}`}>
         {activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
@@ -726,6 +773,8 @@ export default function SessionView() {
             finalTranscript={finalTranscript}
             isTranscribing={isTranscribing}
             isRecording={captureState === "recording"}
+            isRefining={isRefining}
+            liveTranscriptionEnabled={getLiveTranscriptionEnabled()}
           />
         ) : (
           <SessionEditor
@@ -733,6 +782,7 @@ export default function SessionView() {
             initialState={initialState}
             onChange={isReadOnly ? undefined : handleEditorChange}
             readOnly={isReadOnly}
+            streaming={!!noteIsStreaming}
             placeholder={TAB_PLACEHOLDER[activeTab]}
             header={
               activeTab === "note"
@@ -769,6 +819,8 @@ export default function SessionView() {
                       selectedTemplateId={selectedTemplateId}
                       onTemplateChange={setSelectedTemplateId}
                       onExportPDF={handleExportPDF}
+                      showEntityHighlights={showEntityHighlights}
+                      onToggleEntityHighlights={toggleEntityHighlights}
                       onCopy={() => {
                         const notes = activeSession.notes as SerializedEditorState | null;
                         if (!notes) return;

@@ -6,8 +6,11 @@ interface UseTranscriptionReturn {
   liveTranscript: string;
   finalTranscript: string | null;
   isTranscribing: boolean;
+  isRefining: boolean;
+  refinedTranscript: string | null;
+  refinementSelected: string | null;  // "full_audio" | "segments" | null
   error: string | null;
-  startTranscription: (sessionId: string) => void;
+  startTranscription: (sessionId: string, mode?: "live" | "batch") => void;
   stopTranscription: () => Promise<string>;
   sendAudioChunk: (chunk: Int16Array) => void;
   reset: () => void;
@@ -20,6 +23,9 @@ export function useTranscription(): UseTranscriptionReturn {
   const [partialText, setPartialText] = useState<string | null>(null);
   const [finalTranscript, setFinalTranscript] = useState<string | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isRefining, setIsRefining] = useState(false);
+  const [refinedTranscript, setRefinedTranscript] = useState<string | null>(null);
+  const [refinementSelected, setRefinementSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
@@ -49,6 +55,9 @@ export function useTranscription(): UseTranscriptionReturn {
         is_final?: boolean;
         segment_index?: number;
         message?: string;
+        selected?: string;
+        reason?: string;
+        edit_ratio?: number;
       };
       try {
         data = JSON.parse(raw);
@@ -81,6 +90,16 @@ export function useTranscription(): UseTranscriptionReturn {
         if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
         resolveRef.current?.(data.text);
         resolveRef.current = null;
+      } else if (data.type === "transcript_refining") {
+        // Re-transcription has started in the background
+        setIsRefining(true);
+      } else if (data.type === "transcript_refined" && data.text != null) {
+        // Re-transcription complete — update transcript if quality gate selected it
+        setIsRefining(false);
+        setRefinedTranscript(data.text);
+        setRefinementSelected(data.selected ?? null);
+        // Update the displayed final transcript with the refined version
+        setFinalTranscript(data.text);
       } else if (data.type === "error") {
         setError(data.message ?? "Transcription error");
         setIsTranscribing(false);
@@ -94,13 +113,16 @@ export function useTranscription(): UseTranscriptionReturn {
   }, [onMessage]);
 
   const startTranscription = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, mode: "live" | "batch" = "live") => {
       sessionIdRef.current = sessionId;
       setSegments([]);
       setPartialText(null);
       setFinalTranscript(null);
+      setIsRefining(false);
+      setRefinedTranscript(null);
+      setRefinementSelected(null);
       setError(null);
-      send(JSON.stringify({ type: "transcribe_start", session_id: sessionId }));
+      send(JSON.stringify({ type: "transcribe_start", session_id: sessionId, mode }));
     },
     [send],
   );
@@ -120,6 +142,9 @@ export function useTranscription(): UseTranscriptionReturn {
     setSegments([]);
     setPartialText(null);
     setFinalTranscript(null);
+    setIsRefining(false);
+    setRefinedTranscript(null);
+    setRefinementSelected(null);
     setError(null);
   }, []);
 
@@ -154,6 +179,9 @@ export function useTranscription(): UseTranscriptionReturn {
     liveTranscript,
     finalTranscript,
     isTranscribing,
+    isRefining,
+    refinedTranscript,
+    refinementSelected,
     error,
     startTranscription,
     stopTranscription,

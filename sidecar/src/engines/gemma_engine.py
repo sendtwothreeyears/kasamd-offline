@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+import mlx.core as mx
+
 from .. import config
 from ..prompts import SYSTEM_PROMPT, TITLE_PROMPT
 from .base import NoteEngine
@@ -37,8 +39,9 @@ class GemmaEngine(NoteEngine):
             raise RuntimeError("Gemma engine not loaded — call load() first")
 
         loop = asyncio.get_running_loop()
+        from ..server import _mlx_executor
         return await asyncio.wait_for(
-            loop.run_in_executor(None, self._generate_sync, transcript, template),
+            loop.run_in_executor(_mlx_executor, self._generate_sync, transcript, template),
             timeout=GENERATE_TIMEOUT_S,
         )
 
@@ -60,12 +63,14 @@ class GemmaEngine(NoteEngine):
             messages, add_generation_prompt=True
         )
 
-        return generate(
+        result = generate(
             self._model,
             self._tokenizer,
             prompt=prompt,
             max_tokens=4096,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
+        return result
 
     async def generate_stream(
         self, transcript: str, template: str, context: str = ""
@@ -104,9 +109,11 @@ class GemmaEngine(NoteEngine):
             ):
                 if response.text:
                     loop.call_soon_threadsafe(queue.put_nowait, response.text)
+            mx.synchronize()  # Flush Metal command buffers before releasing executor
             loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
-        future = loop.run_in_executor(None, _stream)
+        from ..server import _mlx_executor
+        future = loop.run_in_executor(_mlx_executor, _stream)
 
         try:
             while True:
@@ -122,8 +129,9 @@ class GemmaEngine(NoteEngine):
             raise RuntimeError("Gemma engine not loaded — call load() first")
 
         loop = asyncio.get_running_loop()
+        from ..server import _mlx_executor
         return await asyncio.wait_for(
-            loop.run_in_executor(None, self._generate_title_sync, transcript),
+            loop.run_in_executor(_mlx_executor, self._generate_title_sync, transcript),
             timeout=GENERATE_TIMEOUT_S,
         )
 
@@ -138,12 +146,14 @@ class GemmaEngine(NoteEngine):
             messages, add_generation_prompt=True
         )
 
-        return generate(
+        result = generate(
             self._model,
             self._tokenizer,
             prompt=prompt,
             max_tokens=32,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
+        return result
 
     async def unload(self) -> None:
         self._model = None

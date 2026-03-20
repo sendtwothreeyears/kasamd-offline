@@ -6,6 +6,9 @@ interface TranscriptPanelProps {
   finalTranscript: string | null;
   isTranscribing: boolean;
   isRecording: boolean;
+  isRefining?: boolean;
+  /** When false, show placeholder UI instead of live text during recording. */
+  liveTranscriptionEnabled?: boolean;
 }
 
 export default function TranscriptPanel({
@@ -14,15 +17,18 @@ export default function TranscriptPanel({
   finalTranscript,
   isTranscribing,
   isRecording,
+  isRefining = false,
+  liveTranscriptionEnabled = true,
 }: TranscriptPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isCopied, setIsCopied] = useState(false);
 
+  // In audio-only mode during recording/processing, show placeholder instead
+  const showRecordingPlaceholder = !liveTranscriptionEnabled && isRecording;
+  const showProcessingPlaceholder = !liveTranscriptionEnabled && !isRecording && isTranscribing;
+
   // Show live text while recording/transcribing; afterwards prefer finalTranscript
   // (set synchronously on message arrival) over rawTranscript (persisted via DB).
-  // This avoids: (a) a one-frame flash before the DB save completes on first
-  // recording, and (b) showing stale rawTranscript from a previous recording
-  // before the new value is persisted.
   const displayText = isRecording || isTranscribing
     ? liveTranscript
     : (finalTranscript || rawTranscript || liveTranscript);
@@ -67,30 +73,60 @@ export default function TranscriptPanel({
         {isCopied ? "Copied" : "Copy"}
       </button>
 
-      {/* Scrollable transcript content */}
-      <div
-        ref={scrollRef}
-        className="h-full overflow-y-auto px-4 py-3"
-      >
-        {hasText && (
-          <p className="mr-28 max-w-[800px] font-[ui-sans-serif,system-ui,sans-serif] whitespace-pre-wrap text-base leading-relaxed text-gray-900">
-            {displayText}
-          </p>
-        )}
+      {/* Placeholder states for audio-only mode */}
+      {(showRecordingPlaceholder || showProcessingPlaceholder) ? (
+        <div className="flex h-full flex-col items-center justify-center text-gray-400">
+          {showRecordingPlaceholder ? (
+            <>
+              <svg className="mb-3 h-8 w-8 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+              </svg>
+              <p className="text-sm font-medium">Recording audio…</p>
+            </>
+          ) : (
+            <>
+              <svg className="mb-3 h-8 w-8 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <p className="text-sm font-medium">Analyzing transcript…</p>
+            </>
+          )}
+        </div>
+      ) : (
+        /* Scrollable transcript content */
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto px-4 py-3"
+        >
+          {hasText && (
+            <p className="mr-28 max-w-[800px] font-[ui-sans-serif,system-ui,sans-serif] whitespace-pre-wrap text-base leading-relaxed text-gray-900">
+              {displayText}
+            </p>
+          )}
 
-        {!isRecording && isTranscribing && (
-          <div className="flex items-center gap-2 pt-2 text-sm text-gray-500">
-            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
-            Finalizing transcript…
-          </div>
-        )}
+          {!isRecording && isTranscribing && (
+            <div className="flex items-center gap-2 pt-2 text-sm text-gray-500">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+              Finalizing transcript…
+            </div>
+          )}
 
-        {!hasText && !isTranscribing && !isRecording && (
-          <p className="text-base text-gray-400">
-            Transcription will appear here during recording…
-          </p>
-        )}
-      </div>
+          {isRefining && (
+            <div className="flex items-center gap-2 pt-2 text-sm text-gray-500">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+              Refining transcript…
+            </div>
+          )}
+
+          {!hasText && !isTranscribing && !isRecording && (
+            <p className="text-base text-gray-400">
+              Transcription will appear here during recording…
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -42,5 +42,8 @@ dist/
 
 fluid/
 models/
+merged-model/
+adapter-pure-lora
+adapter-pure-lora-dir/
 .archive/
 agents.md

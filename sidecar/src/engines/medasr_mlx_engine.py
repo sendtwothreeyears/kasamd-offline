@@ -27,6 +27,7 @@ class MedASRMLXEngine(ASREngine):
         self._tokenizer = None
         self._mel_filters = None
         self._beam_decoder = None
+        self._beam_decoder_retranscribe = None  # separate decoder with tuned LM weight
 
     async def load(self) -> None:
         logger.info("Loading MedASR MLX model: %s", config.MEDASR_MLX_MODEL_ID)
@@ -56,8 +57,14 @@ class MedASRMLXEngine(ASREngine):
             sample_rate=SAMPLE_RATE,
         )
 
-        # Build beam search decoder with KenLM language model
+        # Build beam search decoders with KenLM language model.
+        # Streaming decoder uses default alpha (0.5) for low-latency decoding.
+        # Retranscription decoder uses higher alpha (0.6) for stronger LM
+        # influence — acceptable because it runs async after recording stops.
         self._beam_decoder = _build_beam_decoder(Path(model_path), self._tokenizer)
+        self._beam_decoder_retranscribe = _build_beam_decoder(
+            Path(model_path), self._tokenizer, alpha=0.6, beta=1.0,
+        )
 
         logger.info("Tokenizer loaded, mel filters ready")
 
@@ -96,6 +103,7 @@ class MedASRMLXEngine(ASREngine):
                 "Transcribe: inference=%.0fms, beam_decode=%.0fms",
                 t_inference * 1000, t_decode * 1000,
             )
+            mx.synchronize()  # Flush Metal command buffers before releasing executor
             return text
 
         t1 = time.perf_counter()
@@ -105,6 +113,7 @@ class MedASRMLXEngine(ASREngine):
             "Transcribe: inference=%.0fms, greedy_decode=%.0fms",
             t_inference * 1000, t_decode * 1000,
         )
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
         return text
 
     def _decode_beam_search(self, logits: mx.array) -> str:
@@ -136,6 +145,55 @@ class MedASRMLXEngine(ASREngine):
 
         return self._tokenizer.decode(collapsed)
 
+    # ------------------------------------------------------------------
+    # Chunked encode + decode for full-audio re-transcription (KAS-278)
+    # ------------------------------------------------------------------
+
+    def _encode_chunk_sync(self, audio_chunk: np.ndarray) -> np.ndarray:
+        """Run encoder on a single audio chunk, return log-probabilities.
+
+        Returns an ``(T, vocab_size)`` float16 numpy array — the CTC
+        log-softmax output for this chunk.  Runs on Metal GPU via MLX.
+        """
+        features = _extract_features(audio_chunk, self._mel_filters)
+        features_mx = mx.array(features[np.newaxis, :, :])
+        logits = self._model(features_mx)
+        logprobs = nn.log_softmax(logits, axis=-1)
+        result = np.array(logprobs[0]).astype(np.float16)
+        mx.synchronize()  # Flush Metal command buffers before releasing executor
+        return result
+
+    def decode_logprobs(
+        self,
+        logprobs_f16: np.ndarray,
+        beam_width: int = 100,
+    ) -> tuple[str, float, float]:
+        """Decode concatenated log-probabilities with the retranscription decoder.
+
+        Uses the dedicated retranscription beam decoder (alpha=0.6) and
+        ``decode_beams`` to extract per-beam scores.
+
+        Returns ``(text, logit_score, lm_score)`` for the best beam.
+        """
+        decoder = self._beam_decoder_retranscribe or self._beam_decoder
+        if decoder is None:
+            raise RuntimeError("Beam decoder not available")
+
+        logprobs_f32 = logprobs_f16.astype(np.float32)
+        beams = decoder.decode_beams(
+            logprobs_f32,
+            beam_width=beam_width,
+            beam_prune_logp=-8.0,
+            hotwords=config.HOTWORDS,
+            hotword_weight=config.HOTWORD_WEIGHT,
+        )
+
+        if not beams:
+            return ("", 0.0, 0.0)
+
+        best = beams[0]
+        return (_restore_text(best.text), best.logit_score, best.lm_score)
+
     async def unload(self) -> None:
         self._model = None
         self._tokenizer = None
@@ -148,10 +206,17 @@ class MedASRMLXEngine(ASREngine):
 # Beam search decoder construction
 # ---------------------------------------------------------------------------
 
-def _build_beam_decoder(model_path: Path, tokenizer: Tokenizer):
+def _build_beam_decoder(
+    model_path: Path,
+    tokenizer: Tokenizer,
+    alpha: float = 0.5,
+    beta: float = 1.5,
+):
     """Build a pyctcdecode beam search decoder with KenLM language model.
 
-    Returns None if pyctcdecode is not installed (graceful degradation).
+    *alpha* and *beta* control language-model weight and length bonus
+    respectively.  They are set at construction time and cannot be changed
+    per-call.  Returns None if pyctcdecode is not installed.
     """
     try:
         from pyctcdecode import build_ctcdecoder
@@ -216,6 +281,8 @@ def _build_beam_decoder(model_path: Path, tokenizer: Tokenizer):
             labels=vocab,
             kenlm_model_path=kenlm_model_path,
             unigrams=unigrams,
+            alpha=alpha,
+            beta=beta,
         )
     except Exception as exc:
         logger.warning("Beam search decoder construction failed — using greedy decoding: %s", exc)
@@ -296,19 +363,21 @@ def _extract_features(
 
     Matches LasrFeatureExtractor._torch_extract_fbank_features().
     """
-    # Symmetric Hann window (periodic=False), matching torch.hann_window
-    window = np.hanning(win_length).astype(np.float64)
-    audio_f64 = audio.astype(np.float64)
+    # Symmetric Hann window (periodic=False), matching torch.hann_window.
+    # float32 intermediates halve peak memory vs float64 with negligible
+    # precision impact on mel-spectrogram computation.
+    window = np.hanning(win_length).astype(np.float32)
+    audio_f32 = audio.astype(np.float32)
 
     # Unfold audio into overlapping frames
-    n_frames = 1 + (len(audio_f64) - win_length) // hop_length
+    n_frames = 1 + (len(audio_f32) - win_length) // hop_length
     if n_frames <= 0:
         return np.zeros((1, mel_filters.shape[1]), dtype=np.float32)
 
     frames = np.lib.stride_tricks.as_strided(
-        audio_f64,
+        audio_f32,
         shape=(n_frames, win_length),
-        strides=(hop_length * audio_f64.strides[0], audio_f64.strides[0]),
+        strides=(hop_length * audio_f32.strides[0], audio_f32.strides[0]),
     )
 
     # Apply window and compute FFT
@@ -321,3 +390,50 @@ def _extract_features(
     log_mel = np.log(mel_spec)
 
     return log_mel.astype(np.float32)
+
+
+def _extract_features_chunked(
+    audio: np.ndarray,
+    mel_filters: np.ndarray,
+    chunk_duration: float = 20.0,
+    sample_rate: int = SAMPLE_RATE,
+    n_fft: int = 512,
+    hop_length: int = 160,
+    win_length: int = 400,
+) -> np.ndarray:
+    """Extract log-mel spectrogram in chunks to bound peak memory.
+
+    Splits the work into groups of STFT frames (not raw samples) so that
+    the chunked output has exactly the same number of frames — and the
+    same sample positions — as a single-pass call to `_extract_features`.
+    Peak numpy memory stays ≈21 MB per chunk regardless of recording length.
+
+    Returns the same ``(T, n_mel)`` float32 array as `_extract_features`.
+    """
+    n_total_frames = 1 + (len(audio) - win_length) // hop_length
+    if n_total_frames <= 0:
+        return np.zeros((1, mel_filters.shape[1]), dtype=np.float32)
+
+    frames_per_chunk = max(1, int(chunk_duration * sample_rate) // hop_length)
+
+    if n_total_frames <= frames_per_chunk:
+        return _extract_features(audio, mel_filters, n_fft, hop_length, win_length)
+
+    parts: list[np.ndarray] = []
+    f_start = 0
+
+    while f_start < n_total_frames:
+        f_end = min(f_start + frames_per_chunk, n_total_frames)
+        # Audio slice for these frames: first sample of first frame to
+        # last sample of last frame's window.
+        audio_start = f_start * hop_length
+        audio_end = (f_end - 1) * hop_length + win_length
+        chunk_audio = audio[audio_start:audio_end]
+
+        features = _extract_features(
+            chunk_audio, mel_filters, n_fft, hop_length, win_length,
+        )
+        parts.append(features)
+        f_start = f_end
+
+    return np.concatenate(parts, axis=0)
