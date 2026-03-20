@@ -18,6 +18,7 @@ import { useSidecar } from "../../contexts/SidecarContext";
 import { useTextExtraction } from "../../hooks/useTextExtraction";
 import { usePdfExport } from "../../hooks/usePdfExport";
 import { useSmoothStream } from "../../hooks/useSmoothStream";
+import { getLiveTranscriptionEnabled } from "../settings/TranscriptionSettingsPane";
 import { markdownToLexical } from "../../lib/markdown-to-lexical";
 import { lexicalToHtml } from "../../lib/lexical-to-html";
 import ContextAttachments, { type AttachmentWithStatus } from "./ContextAttachments";
@@ -421,7 +422,8 @@ export default function SessionView() {
   const handleStartRecording = useCallback(async () => {
     if (!activeSession) return;
     setActiveTab("transcription");
-    startTranscription(activeSession.id);
+    const mode = getLiveTranscriptionEnabled() ? "live" : "batch";
+    startTranscription(activeSession.id, mode);
     startTimer();
     await start();
   }, [activeSession, start, startTranscription, startTimer]);
@@ -753,6 +755,7 @@ export default function SessionView() {
             isTranscribing={isTranscribing}
             isRecording={captureState === "recording"}
             isRefining={isRefining}
+            liveTranscriptionEnabled={getLiveTranscriptionEnabled()}
           />
         ) : (
           <SessionEditor

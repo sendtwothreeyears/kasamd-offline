@@ -10,7 +10,7 @@ interface UseTranscriptionReturn {
   refinedTranscript: string | null;
   refinementSelected: string | null;  // "full_audio" | "segments" | null
   error: string | null;
-  startTranscription: (sessionId: string) => void;
+  startTranscription: (sessionId: string, mode?: "live" | "batch") => void;
   stopTranscription: () => Promise<string>;
   sendAudioChunk: (chunk: Int16Array) => void;
   reset: () => void;
@@ -113,13 +113,13 @@ export function useTranscription(): UseTranscriptionReturn {
   }, [onMessage]);
 
   const startTranscription = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, mode: "live" | "batch" = "live") => {
       sessionIdRef.current = sessionId;
       setSegments([]);
       setPartialText(null);
       setFinalTranscript(null);
       setError(null);
-      send(JSON.stringify({ type: "transcribe_start", session_id: sessionId }));
+      send(JSON.stringify({ type: "transcribe_start", session_id: sessionId, mode }));
     },
     [send],
   );
