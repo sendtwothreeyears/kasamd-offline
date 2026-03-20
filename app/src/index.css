@@ -206,6 +206,13 @@ body {
   background-color: #fef3c7;
   color: #92400e;
 }
+/* When highlights are hidden, render entities as plain inline text */
+.entity-highlights-off .clinical-entity {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+  font-weight: inherit;
+}
 
 /* Shake animation for wrong password */
 @keyframes shake {

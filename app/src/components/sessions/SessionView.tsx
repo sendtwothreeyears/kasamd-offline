@@ -72,6 +72,8 @@ export default function SessionView() {
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const mergeActiveSession = useAppStore((s) => s.mergeActiveSession);
   const providerId = useAppStore((s) => s.providerId);
+  const showEntityHighlights = useAppStore((s) => s.showEntityHighlights);
+  const toggleEntityHighlights = useAppStore((s) => s.toggleEntityHighlights);
 
   const [patient, setPatient] = useState<Patient | null>(null);
   const [activeTab, setActiveTab] = useState<SessionTab>("context");
@@ -720,7 +722,7 @@ export default function SessionView() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 pt-2">
+      <div className={`min-h-0 flex-1 pt-2${!showEntityHighlights ? " entity-highlights-off" : ""}`}>
         {activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
@@ -771,6 +773,8 @@ export default function SessionView() {
                       selectedTemplateId={selectedTemplateId}
                       onTemplateChange={setSelectedTemplateId}
                       onExportPDF={handleExportPDF}
+                      showEntityHighlights={showEntityHighlights}
+                      onToggleEntityHighlights={toggleEntityHighlights}
                       onCopy={() => {
                         const notes = activeSession.notes as SerializedEditorState | null;
                         if (!notes) return;
