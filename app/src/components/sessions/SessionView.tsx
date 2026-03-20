@@ -109,6 +109,7 @@ export default function SessionView() {
     finalTranscript,
     isTranscribing,
     isRefining,
+    refinedTranscript,
     error: transcriptionError,
     startTranscription,
     stopTranscription,
@@ -404,6 +405,24 @@ export default function SessionView() {
       }
     });
   }, [activeSession, mergeActiveSession, onNoteGenerated]);
+
+  // Persist refined transcript to DB so note generation uses the best version
+  useEffect(() => {
+    if (!refinedTranscript || !activeSession) return;
+    try {
+      const lexicalState = markdownToLexical(refinedTranscript);
+      db.updateSession(activeSession.id, {
+        rawTranscript: refinedTranscript,
+        transcript: lexicalState,
+      });
+      mergeActiveSession(activeSession.id, {
+        rawTranscript: refinedTranscript,
+        transcript: lexicalState,
+      });
+    } catch (err) {
+      console.error("Failed to persist refined transcript:", err);
+    }
+  }, [refinedTranscript, activeSession, mergeActiveSession]);
 
   // Flush pending save on unmount
   useEffect(() => {
