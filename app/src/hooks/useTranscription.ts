@@ -118,6 +118,9 @@ export function useTranscription(): UseTranscriptionReturn {
       setSegments([]);
       setPartialText(null);
       setFinalTranscript(null);
+      setIsRefining(false);
+      setRefinedTranscript(null);
+      setRefinementSelected(null);
       setError(null);
       send(JSON.stringify({ type: "transcribe_start", session_id: sessionId, mode }));
     },
