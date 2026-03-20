@@ -1,4 +1,4 @@
-"""MedGemma-4B note generation engine — transcript to SOAP note via MLX."""
+"""MedGemma 1.5-4B note generation engine — transcript to SOAP note via mlx-vlm."""
 
 import asyncio
 import logging
@@ -15,22 +15,31 @@ GENERATE_TIMEOUT_S = 120
 
 
 class MedGemmaEngine(NoteEngine):
-    """NoteEngine backed by MedGemma-4B via MLX (Metal GPU)."""
+    """NoteEngine backed by MedGemma 1.5-4B via mlx-vlm (Metal GPU)."""
 
     def __init__(self) -> None:
         self._model = None
-        self._tokenizer = None
+        self._processor = None
 
     async def load(self) -> None:
         logger.info("Loading MedGemma model: %s", config.MEDGEMMA_MODEL_ID)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._load_sync)
-        logger.info("MedGemma model loaded (MLX Metal GPU)")
+        logger.info("MedGemma model loaded (mlx-vlm Metal GPU)")
 
     def _load_sync(self) -> None:
-        from mlx_lm import load
+        from mlx_vlm import load
 
-        self._model, self._tokenizer = load(config.MEDGEMMA_MODEL_ID)
+        self._model, self._processor = load(config.MEDGEMMA_MODEL_ID)
+
+    def _format_prompt(self, messages: list[dict]) -> str:
+        """Apply the Gemma chat template to a list of messages via mlx-vlm."""
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        model_config = self._model.config if hasattr(self._model, "config") else {}
+        return apply_chat_template(
+            self._processor, model_config, messages, num_images=0
+        )
 
     async def generate(self, transcript: str, template: str) -> str:
         if self._model is None:
@@ -44,7 +53,7 @@ class MedGemmaEngine(NoteEngine):
         )
 
     def _generate_sync(self, transcript: str, template: str, context: str = "") -> str:
-        from mlx_lm import generate
+        from mlx_vlm import generate
 
         system = SYSTEM_PROMPT
         if template:
@@ -57,16 +66,35 @@ class MedGemmaEngine(NoteEngine):
             {"role": "user", "content": f"Transcript:\n{transcript}"},
         ]
 
-        prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
+        prompt = self._format_prompt(messages)
+
+        result = generate(
+            self._model,
+            self._processor,
+            prompt,
+            max_tokens=config.MEDGEMMA_MAX_TOKENS,
+            verbose=False,
+            temperature=config.MEDGEMMA_TEMPERATURE,
+            repetition_penalty=config.MEDGEMMA_REPETITION_PENALTY,
+            repetition_context_size=config.MEDGEMMA_REPETITION_CONTEXT_SIZE,
+            top_p=config.MEDGEMMA_TOP_P,
         )
 
-        return generate(
-            self._model,
-            self._tokenizer,
-            prompt=prompt,
-            max_tokens=4096,
-        )
+        # Post-hoc repetition detection
+        from ..repetition_detector import RepetitionDetector
+
+        detector = RepetitionDetector()
+        detector.feed(result.text)
+        if detector.is_looping:
+            clean = detector.clean_text
+            logger.warning(
+                "Repetition loop detected, truncated at %d chars (original %d chars)",
+                len(clean),
+                len(result.text),
+            )
+            return clean
+
+        return result.text
 
     async def generate_stream(
         self, transcript: str, template: str, context: str = ""
@@ -87,25 +115,42 @@ class MedGemmaEngine(NoteEngine):
             {"role": "user", "content": f"Transcript:\n{transcript}"},
         ]
 
-        prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
-        )
+        prompt = self._format_prompt(messages)
 
         # stream_generate is synchronous generator — run in executor with a
-        # queue to bridge to async.
+        # queue to bridge to async.  A sentinel of None means "done";
+        # a sentinel of _LOOP_DETECTED means the detector fired in the
+        # executor thread.
         queue: asyncio.Queue[str | None] = asyncio.Queue()
 
+        from ..repetition_detector import RepetitionDetector
+
+        detector = RepetitionDetector()
+
         def _stream() -> None:
-            from mlx_lm import stream_generate
+            from mlx_vlm import stream_generate
 
             for response in stream_generate(
                 self._model,
-                self._tokenizer,
-                prompt=prompt,
-                max_tokens=4096,
+                self._processor,
+                prompt,
+                max_tokens=config.MEDGEMMA_MAX_TOKENS,
+                temperature=config.MEDGEMMA_TEMPERATURE,
+                repetition_penalty=config.MEDGEMMA_REPETITION_PENALTY,
+                repetition_context_size=config.MEDGEMMA_REPETITION_CONTEXT_SIZE,
+                top_p=config.MEDGEMMA_TOP_P,
             ):
-                if response.text:
-                    loop.call_soon_threadsafe(queue.put_nowait, response.text)
+                text = response.text if hasattr(response, "text") else str(response)
+                if text:
+                    detector.feed(text)
+                    if detector.is_looping:
+                        logger.warning(
+                            "Repetition loop detected during streaming, "
+                            "truncated at %d chars",
+                            len(detector.clean_text),
+                        )
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, text)
             loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
         from ..server import _mlx_executor
@@ -132,25 +177,27 @@ class MedGemmaEngine(NoteEngine):
         )
 
     def _generate_title_sync(self, transcript: str) -> str:
-        from mlx_lm import generate
+        from mlx_vlm import generate
 
         messages = [
             {"role": "system", "content": TITLE_PROMPT},
             {"role": "user", "content": f"Transcript:\n{transcript}"},
         ]
 
-        prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
-        )
+        prompt = self._format_prompt(messages)
 
-        return generate(
+        result = generate(
             self._model,
-            self._tokenizer,
-            prompt=prompt,
+            self._processor,
+            prompt,
             max_tokens=32,
+            verbose=False,
+            temperature=config.MEDGEMMA_TEMPERATURE,
+            top_p=config.MEDGEMMA_TOP_P,
         )
+        return result.text
 
     async def unload(self) -> None:
         self._model = None
-        self._tokenizer = None
+        self._processor = None
         logger.info("MedGemma model unloaded")

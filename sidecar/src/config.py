@@ -15,7 +15,17 @@ NOTE_ENGINE = os.getenv("NOTE_ENGINE", "medgemma")
 # -- Model identifiers --
 MEDASR_MLX_MODEL_ID = os.getenv("MEDASR_MLX_MODEL_ID", "google/medasr")
 GEMMA_MODEL_ID = os.getenv("GEMMA_MODEL_ID", "mlx-community/gemma-3n-E2B-it-lm-4bit")
-MEDGEMMA_MODEL_ID = os.getenv("MEDGEMMA_MODEL_ID", "mlx-community/medgemma-4b-it-4bit")
+MEDGEMMA_MODEL_ID = os.getenv("MEDGEMMA_MODEL_ID", "/Users/Shared/Code/kasamd_offline/models/medgemma-1.5-4b-ft-4bit")
+
+# -- MedGemma generation parameters --
+# Lower temperature for deterministic clinical output; mild repetition_penalty
+# avoids incentivising transcript copying (high penalty makes model's own tokens
+# expensive, pushing it toward verbatim transcript).
+MEDGEMMA_TEMPERATURE: float = float(os.getenv("MEDGEMMA_TEMPERATURE", "0.35"))
+MEDGEMMA_REPETITION_PENALTY: float = float(os.getenv("MEDGEMMA_REPETITION_PENALTY", "1.05"))
+MEDGEMMA_REPETITION_CONTEXT_SIZE: int = int(os.getenv("MEDGEMMA_REPETITION_CONTEXT_SIZE", "128"))
+MEDGEMMA_TOP_P: float = float(os.getenv("MEDGEMMA_TOP_P", "0.9"))
+MEDGEMMA_MAX_TOKENS: int = int(os.getenv("MEDGEMMA_MAX_TOKENS", "1500"))
 
 # -- Decoding configuration --
 BEAM_WIDTH: int = int(os.getenv("BEAM_WIDTH", "8"))

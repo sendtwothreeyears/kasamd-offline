@@ -3,23 +3,31 @@
 from sidecar.src.prompts import SYSTEM_PROMPT
 
 
-class TestSystemPromptEntityTagging:
-    """Verify the system prompt includes entity tagging instructions."""
+class TestSystemPromptStructure:
+    """Verify the system prompt meets the design contract."""
 
-    def test_contains_drug_tag_syntax(self):
-        assert "{{drug:" in SYSTEM_PROMPT
+    def test_prompt_under_token_budget(self):
+        """Prompt should be ~150 tokens; enforce a generous 200-word ceiling."""
+        assert len(SYSTEM_PROMPT.split()) <= 200
 
-    def test_contains_condition_tag_syntax(self):
-        assert "{{condition:" in SYSTEM_PROMPT
+    def test_contains_role_identity(self):
+        assert "clinical documentation assistant" in SYSTEM_PROMPT
 
-    def test_instructs_first_occurrence_only(self):
-        assert "first occurrence" in SYSTEM_PROMPT.lower() or "FIRST occurrence" in SYSTEM_PROMPT
+    def test_contains_bold_formatting_instruction(self):
+        assert "bold" in SYSTEM_PROMPT.lower() or "**" in SYSTEM_PROMPT
 
-    def test_excludes_symptoms_procedures_labs(self):
-        assert "Do NOT tag symptoms, procedures, lab tests" in SYSTEM_PROMPT
+    def test_contains_few_shot_example(self):
+        assert "**Subjective**" in SYSTEM_PROMPT
+        assert "**Objective**" in SYSTEM_PROMPT
 
-    def test_drug_example_present(self):
-        assert "{{drug:metformin}}" in SYSTEM_PROMPT
+    def test_no_entity_tagging_instructions(self):
+        assert "{{drug:" not in SYSTEM_PROMPT
+        assert "{{condition:" not in SYSTEM_PROMPT
 
-    def test_condition_example_present(self):
-        assert "{{condition:type 2 diabetes mellitus}}" in SYSTEM_PROMPT
+    def test_transcript_fidelity_instruction(self):
+        assert "transcript" in SYSTEM_PROMPT.lower()
+
+    def test_positive_phrasing(self):
+        """Prompt should use positive-only phrasing (no 'Do not' / 'Never')."""
+        assert "Do not" not in SYSTEM_PROMPT
+        assert "Never" not in SYSTEM_PROMPT
