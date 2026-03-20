@@ -17,6 +17,7 @@ import { useNoteGeneration } from "../../hooks/useNoteGeneration";
 import { useSidecar } from "../../contexts/SidecarContext";
 import { useTextExtraction } from "../../hooks/useTextExtraction";
 import { usePdfExport } from "../../hooks/usePdfExport";
+import { useSmoothStream } from "../../hooks/useSmoothStream";
 import { markdownToLexical } from "../../lib/markdown-to-lexical";
 import { lexicalToHtml } from "../../lib/lexical-to-html";
 import ContextAttachments, { type AttachmentWithStatus } from "./ContextAttachments";
@@ -139,6 +140,7 @@ export default function SessionView() {
   const { connectionState, send, onMessage } = useSidecar();
   const { extractText } = useTextExtraction();
   const { generatePdf } = usePdfExport();
+  const { smoothText, appendChunk, flush: flushSmooth, reset: resetSmooth } = useSmoothStream();
   const sidecarConnected = connectionState === "connected";
 
   const handleSelectDevice = useCallback(
@@ -153,8 +155,27 @@ export default function SessionView() {
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<{ sessionId: string; field: string; state: SerializedEditorState } | null>(null);
-  const streamingTextRef = useRef(streamingText);
-  streamingTextRef.current = streamingText;
+
+  // Feed raw streaming text into the smooth buffer
+  useEffect(() => {
+    if (isStreaming && streamingText) {
+      appendChunk(streamingText);
+    }
+  }, [isStreaming, streamingText, appendChunk]);
+
+  // Reset smooth buffer on stream start, flush on stream end
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (isStreaming && !wasStreamingRef.current) {
+      resetSmooth();
+    } else if (!isStreaming && wasStreamingRef.current) {
+      flushSmooth();
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, resetSmooth, flushSmooth]);
+
+  const smoothTextRef = useRef(smoothText);
+  smoothTextRef.current = smoothText;
 
   // Reset tab and local state when switching sessions
   useEffect(() => {
@@ -339,9 +360,9 @@ export default function SessionView() {
     }
   }, [attachments]);
 
-  // Throttled streaming preview: convert markdown → Lexical at a fixed interval
-  // while streaming. Uses a ref so the interval always reads the latest text
-  // without re-running the effect on every chunk (which killed the old debounce).
+  // Throttled streaming preview: convert smoothed text → Lexical at a fixed
+  // interval while streaming. Uses smoothTextRef so the interval reads the
+  // latest smoothed output without re-running on every rAF update.
   useEffect(() => {
     if (!isStreaming) {
       setStreamPreview(null);
@@ -349,7 +370,7 @@ export default function SessionView() {
     }
 
     const tick = () => {
-      const text = streamingTextRef.current;
+      const text = smoothTextRef.current;
       if (text) {
         try {
           setStreamPreview(markdownToLexical(text));
