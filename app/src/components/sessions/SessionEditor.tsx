@@ -3,7 +3,7 @@
  * Reusable across all three tabs — mount with different initialState per tab.
  */
 
-import { memo, useEffect } from "react";
+import { memo, useEffect, useRef } from "react";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -50,16 +50,21 @@ const EDITOR_THEME = {
   formatJustify: "text-justify",
 };
 
-/** Loads an existing Lexical editor state into the editor on mount. */
+/** Loads an existing Lexical editor state into the editor on mount.
+ *  Only runs once — subsequent prop changes are ignored because the editor
+ *  is the source of truth while mounted. Remounting (via key-prop change)
+ *  handles cases where a fresh state must be loaded (e.g. streaming finish). */
 function LoadStatePlugin({
   editorState,
 }: {
   editorState: SerializedEditorState | null;
 }) {
   const [editor] = useLexicalComposerContext();
+  const loadedRef = useRef(false);
 
   useEffect(() => {
-    if (!editorState) return;
+    if (loadedRef.current || !editorState) return;
+    loadedRef.current = true;
     const state = editor.parseEditorState(editorState);
     editor.setEditorState(state);
   }, [editor, editorState]);
