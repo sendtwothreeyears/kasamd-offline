@@ -136,6 +136,43 @@ class MedASRMLXEngine(ASREngine):
 
         return self._tokenizer.decode(collapsed)
 
+    # ------------------------------------------------------------------
+    # Chunked encode + decode for full-audio re-transcription (KAS-278)
+    # ------------------------------------------------------------------
+
+    def _encode_chunk_sync(self, audio_chunk: np.ndarray) -> np.ndarray:
+        """Run encoder on a single audio chunk, return log-probabilities.
+
+        Returns an ``(T, vocab_size)`` float16 numpy array — the CTC
+        log-softmax output for this chunk.  Runs on Metal GPU via MLX.
+        """
+        features = _extract_features(audio_chunk, self._mel_filters)
+        features_mx = mx.array(features[np.newaxis, :, :])
+        logits = self._model(features_mx)
+        logprobs = nn.log_softmax(logits, axis=-1)
+        return np.array(logprobs[0]).astype(np.float16)
+
+    def decode_logprobs(
+        self,
+        logprobs_f16: np.ndarray,
+        beam_width: int = 100,
+    ) -> str:
+        """Decode concatenated log-probabilities with beam search.
+
+        Uses the same beam decoder as streaming but accepts pre-computed
+        log-probs (float16 or float32, shape ``(T, vocab_size)``).
+        """
+        if self._beam_decoder is None:
+            raise RuntimeError("Beam decoder not available")
+        logprobs_f32 = logprobs_f16.astype(np.float32)
+        result = self._beam_decoder.decode(
+            logprobs_f32,
+            beam_width=beam_width,
+            hotwords=config.HOTWORDS,
+            hotword_weight=config.HOTWORD_WEIGHT,
+        )
+        return _restore_text(result)
+
     async def unload(self) -> None:
         self._model = None
         self._tokenizer = None
