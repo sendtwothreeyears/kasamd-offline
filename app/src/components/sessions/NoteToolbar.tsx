@@ -9,6 +9,7 @@ interface NoteToolbarProps {
   onCopy: () => void;
   onExportPDF: () => void;
   onRegenerate: () => void;
+  onDelete?: () => void;
   canGenerate: boolean;
   templates: Template[];
   selectedTemplateId: string | null;
@@ -24,6 +25,7 @@ export default function NoteToolbar({
   onCopy,
   onExportPDF,
   onRegenerate,
+  onDelete,
   canGenerate,
   templates,
   selectedTemplateId,
@@ -48,19 +50,11 @@ export default function NoteToolbar({
         <button
           type="button"
           onClick={() => setShowTemplateModal(true)}
-          className="inline-flex min-w-[200px] items-center justify-between rounded-lg border border-border bg-white px-4 py-1.5 text-left transition-colors hover:border-gray-400"
+          className="inline-flex items-center rounded-lg border border-border bg-white px-4 py-1.5 text-left transition-colors hover:border-gray-400"
         >
-          <span className="mr-1 truncate text-sm text-gray-900">
+          <span className="truncate text-sm text-gray-900">
             {selected?.name ?? "Select template"}
           </span>
-          <svg
-            className="h-5 w-5 shrink-0 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
         </button>
         <TemplateSelectorModal
           open={showTemplateModal}
@@ -76,6 +70,7 @@ export default function NoteToolbar({
           onCopy={onCopy}
           onExportPDF={onExportPDF}
           onRegenerate={onRegenerate}
+          onDelete={onDelete}
           canGenerate={canGenerate}
         />
         {(isGenerating || isExporting) && (
@@ -128,6 +123,7 @@ function OptionsMenu({
   onCopy,
   onExportPDF,
   onRegenerate,
+  onDelete,
   canGenerate,
 }: {
   hasNote: boolean;
@@ -136,6 +132,7 @@ function OptionsMenu({
   onCopy: () => void;
   onExportPDF: () => void;
   onRegenerate: () => void;
+  onDelete?: () => void;
   canGenerate: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -226,6 +223,19 @@ function OptionsMenu({
           >
             Regenerate
           </button>
+
+          {onDelete && (
+            <>
+              <div className="my-1 border-t border-gray-200" />
+              <button
+                type="button"
+                onClick={() => act(onDelete)}
+                className="w-full px-4 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50"
+              >
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

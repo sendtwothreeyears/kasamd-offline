@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../../stores/appStore";
 import * as db from "../../lib/db";
-import type { Patient, Template } from "../../types";
+import type { Patient, Template, SessionNoteTab } from "../../types";
 import type { SerializedEditorState } from "lexical";
 import SessionTopBar from "./SessionTopBar";
-import SessionTabBar, { type SessionTab } from "./SessionTabBar";
+import SessionTabBar, { type SessionTab, getNoteId } from "./SessionTabBar";
 import SessionEditor from "./SessionEditor";
 import TranscriptPanel from "./TranscriptPanel";
 import NoteToolbar from "./NoteToolbar";
@@ -23,6 +23,8 @@ import { markdownToLexical } from "../../lib/markdown-to-lexical";
 import { lexicalToHtml } from "../../lib/lexical-to-html";
 import ContextAttachments, { type AttachmentWithStatus } from "./ContextAttachments";
 import QuickPatientModal from "../patients/QuickPatientModal";
+import TemplateSelectorModal from "../templates/TemplateSelectorModal";
+import ConfirmModal from "../ui/ConfirmModal";
 import Toast from "../ui/Toast";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { copyFile, mkdir, remove, stat, writeFile } from "@tauri-apps/plugin-fs";
@@ -51,18 +53,18 @@ function extractTextFromLexical(state: SerializedEditorState): string {
   return lines.join("").trim();
 }
 
-/** Maps each tab to the Session field it reads/writes. */
-const TAB_FIELD: Record<SessionTab, "context" | "transcript" | "notes"> = {
-  context: "context",
-  transcription: "transcript",
-  note: "notes",
-};
+/** Maps a tab to the Session field it reads/writes. Note tabs map to "notes" (legacy single-note). */
+function getTabField(tab: SessionTab): "context" | "transcript" | "notes" {
+  if (tab === "context") return "context";
+  if (tab === "transcription") return "transcript";
+  return "notes"; // note:* tabs
+}
 
-const TAB_PLACEHOLDER: Record<SessionTab, string> = {
-  context: "Add any additional context about the patient...",
-  transcription: "Transcription will appear here during recording...",
-  note: "Generated note will appear here...",
-};
+function getTabPlaceholder(tab: SessionTab): string {
+  if (tab === "context") return "Add any additional context about the patient...";
+  if (tab === "transcription") return "Transcription will appear here during recording...";
+  return "Generated note will appear here...";
+}
 
 const SAVE_DEBOUNCE_MS = 800;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -91,6 +93,12 @@ export default function SessionView() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [showQuickPatient, setShowQuickPatient] = useState(false);
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error"; visible: boolean }>({ message: "", variant: "success", visible: false });
+  const [noteTabs, setNoteTabs] = useState<SessionNoteTab[]>([]);
+  /** Lexical JSON for the currently active note tab (loaded from session_notes). */
+  const [activeNoteContent, setActiveNoteContent] = useState<SerializedEditorState | null>(null);
+  const [showAddNoteModal, setShowAddNoteModal] = useState(false);
+  const [noteLoading, setNoteLoading] = useState(false);
+  const [confirmDeleteNote, setConfirmDeleteNote] = useState<string | null>(null);
 
   const {
     devices,
@@ -138,6 +146,7 @@ export default function SessionView() {
     error: noteError,
     generateNote,
     onNoteGenerated,
+    activeNoteId,
   } = useNoteGeneration();
 
   const { connectionState, send, onMessage } = useSidecar();
@@ -187,8 +196,104 @@ export default function SessionView() {
     setStreamPreview(null);
     setConfirmRegenerate(false);
     setConfirmDelete(false);
+    setActiveNoteContent(null);
     resetTranscription();
   }, [activeSession?.id, resetTranscription]);
+
+  // Load or create default note tab when session changes
+  useEffect(() => {
+    if (!activeSession?.id) {
+      setNoteTabs([]);
+      return;
+    }
+    const sessionId = activeSession.id;
+    (async () => {
+      try {
+        let tabs = await db.getSessionNoteTabs(sessionId);
+        if (tabs.length === 0) {
+          // Create a default note tab using provider's default template
+          const provider = await db.getProvider();
+          let templateId = provider?.defaultTemplateId ?? null;
+          let templateName = "SOAP Note";
+          if (templateId) {
+            const tmpl = await db.getTemplate(templateId);
+            if (tmpl) {
+              templateName = tmpl.name;
+            } else {
+              templateId = null; // template was deleted
+            }
+          }
+          if (!templateId) {
+            // Fall back to first system template named "SOAP Note", or first template
+            const allTemplates = await db.listTemplates(provider?.id ?? "");
+            const soap = allTemplates.find((t) => t.name === "SOAP Note" && t.isSystem);
+            const fallback = soap ?? allTemplates[0];
+            if (fallback) {
+              templateId = fallback.id;
+              templateName = fallback.name;
+            }
+          }
+          if (templateId) {
+            const note = await db.createSessionNote({
+              sessionId,
+              templateId,
+              templateName,
+            });
+            tabs = [{ id: note.id, templateId, templateName: note.templateName }];
+          }
+        }
+        setNoteTabs(tabs);
+      } catch (err) {
+        console.error("Failed to load/create note tabs:", err);
+        setNoteTabs([]);
+      }
+    })();
+  }, [activeSession?.id]);
+
+  // Flush pending save and load note content when switching to a note tab
+  useEffect(() => {
+    // Flush any pending save from the previous tab
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const pending = pendingSaveRef.current;
+    if (pending) {
+      if (pending.field.startsWith("note:")) {
+        const nid = pending.field.slice(5);
+        db.updateSessionNote(nid, JSON.stringify(pending.state)).catch((err) =>
+          console.error("Failed to flush note save on tab switch:", err),
+        );
+      } else {
+        db.updateSession(pending.sessionId, { [pending.field]: pending.state }).catch((err) =>
+          console.error("Failed to flush save on tab switch:", err),
+        );
+      }
+      pendingSaveRef.current = null;
+    }
+
+    const nid = getNoteId(activeTab);
+    if (!nid) {
+      setActiveNoteContent(null);
+      setNoteLoading(false);
+      return;
+    }
+    setNoteLoading(true);
+    (async () => {
+      try {
+        const note = await db.getSessionNote(nid);
+        if (note?.content) {
+          setActiveNoteContent(typeof note.content === "string" ? JSON.parse(note.content) : note.content);
+        } else {
+          setActiveNoteContent(null);
+        }
+      } catch {
+        setActiveNoteContent(null);
+      } finally {
+        setNoteLoading(false);
+      }
+    })();
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!activeSession?.patientId) {
@@ -230,6 +335,19 @@ export default function SessionView() {
       return "";
     }
   }, [selectedTemplateId, templates]);
+
+  /** Get template text for a specific note tab (by noteId), avoiding stale global state. */
+  const getTemplateTextForNote = useCallback((noteId: string) => {
+    const noteTab = noteTabs.find((t) => t.id === noteId);
+    if (!noteTab) return getSelectedTemplateText();
+    const tmpl = templates.find((t) => t.id === noteTab.templateId);
+    if (!tmpl?.content) return "";
+    try {
+      return extractTextFromLexical(tmpl.content as SerializedEditorState);
+    } catch {
+      return "";
+    }
+  }, [noteTabs, templates, getSelectedTemplateText]);
 
   /** Gather all context sources into a single string for note generation. */
   const getContextText = useCallback(() => {
@@ -388,23 +506,45 @@ export default function SessionView() {
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  // Save generated note to DB and update store
+  // Save generated note to session_notes DB and update local state, then regenerate title
   useEffect(() => {
-    onNoteGenerated(async (content) => {
+    onNoteGenerated(async (noteId, content) => {
       if (!activeSession) return;
       try {
-        // Sidecar sends markdown (string); legacy data is Lexical JSON (object)
         const lexicalState =
           typeof content === "string"
             ? markdownToLexical(content)
             : (content as SerializedEditorState);
-        await db.updateSession(activeSession.id, { notes: lexicalState });
-        mergeActiveSession(activeSession.id, { notes: lexicalState });
+
+        // Save to session_notes table
+        await db.updateSessionNote(noteId, JSON.stringify(lexicalState));
+        // Update local state if this note tab is currently active
+        if (getNoteId(activeTab) === noteId) {
+          setActiveNoteContent(lexicalState);
+        }
+
+        // Regenerate session title to reflect the current transcript
+        const transcript = activeSession.rawTranscript;
+        if (transcript) {
+          const sid = activeSession.id;
+          send(JSON.stringify({ type: "generate_title", session_id: sid, transcript }));
+          const unsub = onMessage((raw: string) => {
+            try {
+              const data = JSON.parse(raw);
+              if (data.type === "title" && data.session_id === sid) {
+                unsub();
+                const title = data.title as string;
+                db.updateSession(sid, { title }).catch((e) => console.error("Failed to save title:", e));
+                mergeActiveSession(sid, { title });
+              }
+            } catch { /* ignore parse errors */ }
+          });
+        }
       } catch (err) {
         console.error("Failed to save generated note:", err);
       }
     });
-  }, [activeSession, mergeActiveSession, onNoteGenerated]);
+  }, [activeSession, activeTab, mergeActiveSession, onNoteGenerated, send, onMessage]);
 
   // Persist refined transcript to DB so note generation uses the best version
   useEffect(() => {
@@ -430,9 +570,16 @@ export default function SessionView() {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       const pending = pendingSaveRef.current;
       if (pending) {
-        db.updateSession(pending.sessionId, { [pending.field]: pending.state }).catch((err) =>
-          console.error(`Failed to flush pending save:`, err),
-        );
+        if (pending.field.startsWith("note:")) {
+          const nid = pending.field.slice(5);
+          db.updateSessionNote(nid, JSON.stringify(pending.state)).catch((err) =>
+            console.error(`Failed to flush pending note save:`, err),
+          );
+        } else {
+          db.updateSession(pending.sessionId, { [pending.field]: pending.state }).catch((err) =>
+            console.error(`Failed to flush pending save:`, err),
+          );
+        }
         pendingSaveRef.current = null;
       }
     };
@@ -478,32 +625,100 @@ export default function SessionView() {
             }
           } catch { /* ignore parse errors */ }
         });
+
+        // Auto-generate note on default note tab
+        if (noteTabs.length > 0) {
+          const defaultNoteTab = noteTabs[0];
+          setActiveTab(`note:${defaultNoteTab.id}`);
+          generateNote(sid, defaultNoteTab.id, text, getSelectedTemplateText(), getContextText());
+        }
       } catch (err) {
         console.error("Failed to save rawTranscript:", err);
       }
     }
-  }, [stop, stopTranscription, activeSession, mergeActiveSession, send, onMessage]);
+  }, [stop, stopTranscription, activeSession, mergeActiveSession, send, onMessage, noteTabs, generateNote, getSelectedTemplateText, getContextText]);
 
   const handleEditorChange = useCallback(
     (state: SerializedEditorState) => {
       if (!activeSession) return;
-      const field = TAB_FIELD[activeTab];
+      const nid = getNoteId(activeTab);
 
-      pendingSaveRef.current = { sessionId: activeSession.id, field, state };
-
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(async () => {
-        pendingSaveRef.current = null;
-        try {
-          await db.updateSession(activeSession.id, { [field]: state });
-          mergeActiveSession(activeSession.id, { [field]: state });
-        } catch (err) {
-          console.error(`Failed to save ${field}:`, err);
-        }
-      }, SAVE_DEBOUNCE_MS);
+      if (nid) {
+        // Save to session_notes table
+        pendingSaveRef.current = { sessionId: activeSession.id, field: `note:${nid}`, state };
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(async () => {
+          pendingSaveRef.current = null;
+          try {
+            await db.updateSessionNote(nid, JSON.stringify(state));
+            setActiveNoteContent(state);
+          } catch (err) {
+            console.error(`Failed to save note ${nid}:`, err);
+          }
+        }, SAVE_DEBOUNCE_MS);
+      } else {
+        // Save to session table (context, transcript)
+        const field = getTabField(activeTab);
+        pendingSaveRef.current = { sessionId: activeSession.id, field, state };
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(async () => {
+          pendingSaveRef.current = null;
+          try {
+            await db.updateSession(activeSession.id, { [field]: state });
+            mergeActiveSession(activeSession.id, { [field]: state });
+          } catch (err) {
+            console.error(`Failed to save ${field}:`, err);
+          }
+        }, SAVE_DEBOUNCE_MS);
+      }
     },
     [activeSession, activeTab, mergeActiveSession],
   );
+
+  /** Handle '+' button: user selects a template, we create a note and auto-generate. */
+  const handleAddNote = useCallback(async (templateId: string | null) => {
+    setShowAddNoteModal(false);
+    if (!templateId || !activeSession) return;
+    const tmpl = templates.find((t) => t.id === templateId);
+    if (!tmpl) return;
+
+    try {
+      const note = await db.createSessionNote({
+        sessionId: activeSession.id,
+        templateId: tmpl.id,
+        templateName: tmpl.name,
+      });
+      const newTab: SessionNoteTab = { id: note.id, templateId: tmpl.id, templateName: note.templateName };
+      setNoteTabs((prev) => [...prev, newTab]);
+      setActiveTab(`note:${note.id}`);
+      setSelectedTemplateId(tmpl.id);
+
+      // Auto-generate if transcript exists
+      const transcript = activeSession.rawTranscript;
+      if (transcript) {
+        const templateText = extractTextFromLexical(tmpl.content as SerializedEditorState);
+        generateNote(activeSession.id, note.id, transcript, templateText, getContextText());
+      }
+    } catch (err) {
+      console.error("Failed to add note tab:", err);
+    }
+  }, [activeSession, templates, generateNote, getContextText]);
+
+  /** Delete a note tab and its DB row. */
+  const handleDeleteNote = useCallback(async (noteId: string) => {
+    setConfirmDeleteNote(null);
+    try {
+      await db.deleteSessionNote(noteId);
+      setNoteTabs((prev) => prev.filter((t) => t.id !== noteId));
+      // If we deleted the active tab, switch to context
+      if (getNoteId(activeTab) === noteId) {
+        setActiveTab("context");
+        setActiveNoteContent(null);
+      }
+    } catch (err) {
+      console.error("Failed to delete note:", err);
+    }
+  }, [activeTab]);
 
   if (!activeSession) {
     return (
@@ -523,17 +738,20 @@ export default function SessionView() {
     }
   }
 
-  const field = TAB_FIELD[activeTab];
+  const field = getTabField(activeTab);
   // While streaming on the note tab, show the live preview; otherwise show persisted state
-  const noteIsStreaming = activeTab === "note" && isStreaming && streamPreview;
+  const currentNoteId = getNoteId(activeTab);
+  const noteIsStreaming = currentNoteId !== null && isStreaming && activeNoteId === currentNoteId && streamPreview;
   const initialState = noteIsStreaming
     ? streamPreview
-    : ((activeSession[field] as SerializedEditorState | null) ?? null);
+    : getNoteId(activeTab) !== null
+      ? activeNoteContent
+      : ((activeSession[field] as SerializedEditorState | null) ?? null);
   const isLiveTranscribing = captureState === "recording" || isTranscribing;
   const hasCompletedTranscript = !!activeSession.rawTranscript && !isLiveTranscribing;
   const isReadOnly =
     (activeTab === "transcription" && !hasCompletedTranscript) ||
-    (activeTab === "note" && isStreaming);
+    (getNoteId(activeTab) !== null && (isStreaming || !hasCompletedTranscript));
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (activeTab !== "context") return;
@@ -755,9 +973,27 @@ export default function SessionView() {
         onDeleteRequest={() => setConfirmDelete(true)}
         onDeleteConfirm={() => { setConfirmDelete(false); handleDelete(); }}
         onDeleteCancel={() => setConfirmDelete(false)}
+        hasTranscript={hasCompletedTranscript}
+        onAddNote={() => setShowAddNoteModal(true)}
       />
 
-      <SessionTabBar activeTab={activeTab} onTabChange={setActiveTab} locked={isLiveTranscribing} />
+      <SessionTabBar
+        activeTab={activeTab}
+        onTabChange={(tab) => {
+          setActiveTab(tab);
+          const nid = getNoteId(tab);
+          if (nid) {
+            const nt = noteTabs.find((n) => n.id === nid);
+            if (nt) setSelectedTemplateId(nt.templateId);
+          }
+        }}
+        locked={isLiveTranscribing}
+        showTranscription={!!activeSession.rawTranscript || isLiveTranscribing}
+        noteTabs={noteTabs}
+        onAddNote={() => setShowAddNoteModal(true)}
+        onNewSmartDictation={() => setShowAddNoteModal(true)}
+        hasTranscript={hasCompletedTranscript}
+      />
 
       {/* Patient context (read-only) — shown above editor on context tab */}
       {activeTab === "context" && patient?.context && (
@@ -772,7 +1008,11 @@ export default function SessionView() {
       )}
 
       <div className={`min-h-0 flex-1 pt-2${!showEntityHighlights ? " entity-highlights-off" : ""}`}>
-        {activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
+        {noteLoading && getNoteId(activeTab) !== null ? (
+          <div className="flex items-center justify-center py-16 text-sm text-gray-400">
+            Loading note...
+          </div>
+        ) : activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
             liveTranscript={liveTranscript}
@@ -789,9 +1029,13 @@ export default function SessionView() {
             onChange={isReadOnly ? undefined : handleEditorChange}
             readOnly={isReadOnly}
             streaming={!!noteIsStreaming}
-            placeholder={TAB_PLACEHOLDER[activeTab]}
+            placeholder={
+              getNoteId(activeTab) !== null && !hasCompletedTranscript
+                ? "Create a transcription first to generate a note..."
+                : getTabPlaceholder(activeTab)
+            }
             header={
-              activeTab === "note"
+              getNoteId(activeTab) !== null
                 ? confirmRegenerate
                   ? (
                     <div className="flex items-center justify-end gap-2 px-4 pt-3">
@@ -800,7 +1044,7 @@ export default function SessionView() {
                         type="button"
                         onClick={() => {
                           setConfirmRegenerate(false);
-                          generateNote(activeSession.id, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText());
+                          { const nid = getNoteId(activeTab); if (nid) generateNote(activeSession.id, nid, activeSession.rawTranscript ?? "", getTemplateTextForNote(nid), getContextText()); }
                         }}
                         className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
                       >
@@ -817,32 +1061,58 @@ export default function SessionView() {
                   )
                   : (
                     <NoteToolbar
-                      hasNote={!!activeSession.notes}
+                      hasNote={!!activeNoteContent}
                       isGenerating={isGenerating}
                       isExporting={isExporting}
                       canGenerate={!!activeSession.rawTranscript}
                       templates={templates}
                       selectedTemplateId={selectedTemplateId}
-                      onTemplateChange={setSelectedTemplateId}
+                      onTemplateChange={(templateId) => {
+                        setSelectedTemplateId(templateId);
+                        // Sync the note tab's templateId so regeneration uses the correct template
+                        const nid = getNoteId(activeTab);
+                        if (nid) {
+                          const tmpl = templates.find((t) => t.id === templateId);
+                          const newName = tmpl?.name ?? "Note";
+                          setNoteTabs((prev) =>
+                            prev.map((t) =>
+                              t.id === nid ? { ...t, templateId, templateName: newName } : t,
+                            ),
+                          );
+                          db.updateSessionNoteTemplate(nid, templateId, newName);
+                          // Auto-regenerate note with the new template
+                          const transcript = activeSession.rawTranscript ?? "";
+                          if (transcript) {
+                            let templateText = "";
+                            if (tmpl?.content) {
+                              try { templateText = extractTextFromLexical(tmpl.content as SerializedEditorState); } catch { /* ignore */ }
+                            }
+                            generateNote(activeSession.id, nid, transcript, templateText, getContextText());
+                          }
+                        }
+                      }}
                       onExportPDF={handleExportPDF}
                       showEntityHighlights={showEntityHighlights}
                       onToggleEntityHighlights={toggleEntityHighlights}
                       onCopy={() => {
-                        const notes = activeSession.notes as SerializedEditorState | null;
-                        if (!notes) return;
+                        if (!activeNoteContent) return;
                         try {
-                          const text = extractTextFromLexical(notes);
+                          const text = extractTextFromLexical(activeNoteContent);
                           navigator.clipboard.writeText(text);
                         } catch (err) {
                           console.error("Failed to copy note:", err);
                         }
                       }}
                       onRegenerate={() => {
-                        if (activeSession.notes) {
+                        if (activeNoteContent) {
                           setConfirmRegenerate(true);
                         } else {
-                          generateNote(activeSession.id, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText());
+                          { const nid = getNoteId(activeTab); if (nid) generateNote(activeSession.id, nid, activeSession.rawTranscript ?? "", getTemplateTextForNote(nid), getContextText()); }
                         }
+                      }}
+                      onDelete={() => {
+                        const nid = getNoteId(activeTab);
+                        if (nid) setConfirmDeleteNote(nid);
                       }}
                     />
                   )
@@ -881,6 +1151,26 @@ export default function SessionView() {
           onCreated={handlePatientCreated}
         />
       )}
+
+      {/* Template selector for adding new note tabs */}
+      <TemplateSelectorModal
+        open={showAddNoteModal}
+        onClose={() => setShowAddNoteModal(false)}
+        templates={templates}
+        selectedTemplateId={selectedTemplateId}
+        onSelect={handleAddNote}
+      />
+
+      {/* Confirm delete note */}
+      <ConfirmModal
+        open={!!confirmDeleteNote}
+        onClose={() => setConfirmDeleteNote(null)}
+        onConfirm={() => confirmDeleteNote && handleDeleteNote(confirmDeleteNote)}
+        title="Delete note?"
+        message="This will permanently delete this note. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+      />
 
       {/* Toast notification */}
       <Toast

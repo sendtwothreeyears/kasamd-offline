@@ -588,6 +588,7 @@ async def handler(websocket):
 
             elif msg_type == protocol.GENERATE_NOTE:
                 sid = data.get("session_id")
+                note_id = data.get("note_id")  # optional: routes responses to specific note tab
                 transcript = data.get("transcript", "")
                 template = data.get("template", "")
                 context = data.get("context", "")
@@ -596,19 +597,25 @@ async def handler(websocket):
                     await _send_json(websocket, {
                         "type": protocol.ERROR,
                         "message": "generate_note requires session_id and transcript",
+                        **({"note_id": note_id} if note_id else {}),
                     })
                     continue
 
-                logger.info("Note generation started for session %s", sid)
+                logger.info("Note generation started for session %s (note_id=%s)", sid, note_id)
 
                 # Wait for engines if they're still loading
                 if not _engines_ready.is_set():
                     logger.info("Waiting for engines to finish loading…")
                     await _engines_ready.wait()
 
+                # Build common fields echoed in every response
+                _nf = {"session_id": sid}
+                if note_id:
+                    _nf["note_id"] = note_id
+
                 await _send_json(websocket, {
                     "type": protocol.NOTE_PROGRESS,
-                    "session_id": sid,
+                    **_nf,
                     "status": "generating",
                 })
 
@@ -621,21 +628,22 @@ async def handler(websocket):
                             full_text += chunk
                             await _send_json(websocket, {
                                 "type": protocol.NOTE_CHUNK,
-                                "session_id": sid,
+                                **_nf,
                                 "text": chunk,
                             })
 
                     await _send_json(websocket, {
                         "type": protocol.NOTE,
-                        "session_id": sid,
+                        **_nf,
                         "content": full_text,
                         "is_final": True,
                     })
-                    logger.info("Note generated for session %s", sid)
+                    logger.info("Note generated for session %s (note_id=%s)", sid, note_id)
                 except Exception as exc:
                     logger.exception("Note generation failed for session %s", sid)
                     await _send_json(websocket, {
                         "type": protocol.ERROR,
+                        **_nf,
                         "message": str(exc),
                     })
 

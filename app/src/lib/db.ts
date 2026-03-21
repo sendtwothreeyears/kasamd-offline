@@ -13,6 +13,9 @@ import type {
   Attachment,
   CreateAttachmentInput,
   Tag,
+  SessionNote,
+  SessionNoteTab,
+  CreateSessionNoteInput,
 } from "../types";
 
 const DB_NAME = "sqlite:adwene.db";
@@ -501,6 +504,75 @@ export async function setTagsForTemplate(templateId: string, tagNames: string[])
   // Add the new set
   if (tagNames.length === 0) return [];
   return addTagsToTemplate(templateId, tagNames);
+}
+
+// =============================================================================
+// SessionNote
+// =============================================================================
+
+/** Lightweight tab list — returns only id + templateName (no content). */
+export async function getSessionNoteTabs(sessionId: string): Promise<SessionNoteTab[]> {
+  const db = await getDb();
+  return db.select<SessionNoteTab[]>(
+    "SELECT id, templateId, templateName FROM SessionNote WHERE sessionId = $1 ORDER BY createdAt ASC",
+    [sessionId]
+  );
+}
+
+/** Full note with content — used when user clicks a tab. */
+export async function getSessionNote(noteId: string): Promise<SessionNote | null> {
+  const db = await getDb();
+  const rows = await db.select<SessionNote[]>(
+    "SELECT * FROM SessionNote WHERE id = $1",
+    [noteId]
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+export async function createSessionNote(input: CreateSessionNoteInput): Promise<SessionNote> {
+  const db = await getDb();
+  const id = crypto.randomUUID();
+  const now = nowISO();
+
+  await db.execute(
+    `INSERT INTO SessionNote (
+      id, sessionId, templateId, templateName, content, createdAt, updatedAt
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id, input.sessionId, input.templateId, input.templateName, input.content ?? null, now, now]
+  );
+
+  return {
+    id,
+    sessionId: input.sessionId,
+    templateId: input.templateId,
+    templateName: input.templateName,
+    content: input.content ?? null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function updateSessionNote(noteId: string, content: string): Promise<void> {
+  const db = await getDb();
+  const now = nowISO();
+  await db.execute(
+    "UPDATE SessionNote SET content = $1, updatedAt = $2 WHERE id = $3",
+    [content, now, noteId]
+  );
+}
+
+export async function updateSessionNoteTemplate(noteId: string, templateId: string, templateName: string): Promise<void> {
+  const db = await getDb();
+  const now = nowISO();
+  await db.execute(
+    "UPDATE SessionNote SET templateId = $1, templateName = $2, updatedAt = $3 WHERE id = $4",
+    [templateId, templateName, now, noteId]
+  );
+}
+
+export async function deleteSessionNote(noteId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM SessionNote WHERE id = $1", [noteId]);
 }
 
 // --- Helpers ---

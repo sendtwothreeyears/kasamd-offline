@@ -1,4 +1,4 @@
-import { Timer, Trash2 } from "lucide-react";
+import { FilePlus, Timer, Trash2 } from "lucide-react";
 import type { Patient, Session } from "../../types";
 import type { AudioDevice } from "../../hooks/useAudioDevices";
 import StatusBadge from "../ui/StatusBadge";
@@ -30,6 +30,8 @@ interface SessionTopBarProps {
   onDeleteRequest: () => void;
   onDeleteConfirm: () => void;
   onDeleteCancel: () => void;
+  hasTranscript: boolean;
+  onAddNote: () => void;
 }
 
 export default function SessionTopBar({
@@ -53,6 +55,8 @@ export default function SessionTopBar({
   onDeleteRequest,
   onDeleteConfirm,
   onDeleteCancel,
+  hasTranscript,
+  onAddNote,
 }: SessionTopBarProps) {
   const showMicRow = permissionState === "granted" || permissionState === "prompt" || permissionState === "unknown";
 
@@ -99,6 +103,15 @@ export default function SessionTopBar({
         <div className="flex items-center gap-2">
           {!confirmDelete && (
             <>
+              <button
+                onClick={onAddNote}
+                disabled={!hasTranscript || isRecording || !!isTranscribing}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary-dark px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-30"
+                title={!hasTranscript ? "Record a transcript first" : "New note"}
+              >
+                <FilePlus className="h-4 w-4" />
+                New Note
+              </button>
               {!sidecarConnected && !isRecording && (
                 <span className="text-xs text-red-500">Sidecar offline</span>
               )}

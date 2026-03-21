@@ -159,6 +159,30 @@ export interface Tag {
   name: string;
 }
 
+export interface SessionNote {
+  id: string;
+  sessionId: string;
+  templateId: string;
+  templateName: string;
+  content: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Lightweight reference for tab bar rendering (no content). */
+export interface SessionNoteTab {
+  id: string;
+  templateId: string;
+  templateName: string;
+}
+
+export interface CreateSessionNoteInput {
+  sessionId: string;
+  templateId: string;
+  templateName: string;
+  content?: string | null;
+}
+
 // --- Input Types ---
 
 export type CreatePatientInput = Omit<Patient, "id" | "createdAt" | "updatedAt">;

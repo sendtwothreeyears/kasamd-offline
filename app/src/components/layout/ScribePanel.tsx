@@ -1,22 +1,28 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { Search, UserRound, Check, Trash2, CheckCheck } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import {
+  Search,
+  UserRound,
+  Check,
+  Trash2,
+  CheckCheck,
+  ListFilter,
+  ArrowUpDown,
+  RefreshCw,
+} from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import * as db from "../../lib/db";
 import type { Session, Patient } from "../../types";
+import ScribePanelSortPopover, {
+  type SortField,
+  type SortDirection,
+} from "./ScribePanelSortPopover";
+import ScribePanelFilterPopover, {
+  type DateFilter,
+} from "./ScribePanelFilterPopover";
 
-/** Group sessions by date label: "Today", "Yesterday", or "MM/DD/YYYY". */
+/** Group sessions by date label in MM/DD/YYYY format. */
 function getDateLabel(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const sessionDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (sessionDate.getTime() === today.getTime()) return "Today";
-  if (sessionDate.getTime() === yesterday.getTime()) return "Yesterday";
-  return date.toLocaleDateString(undefined, {
+  return new Date(dateStr).toLocaleDateString("en-US", {
     month: "2-digit",
     day: "2-digit",
     year: "numeric",
@@ -51,8 +57,23 @@ export default function ScribePanel() {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [sortField, setSortField] = useState<SortField>("createdAt");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [showSortPopover, setShowSortPopover] = useState(false);
+  const [dateFilter, setDateFilter] = useState<DateFilter>({ type: "all" });
+  const [patientFilter, setPatientFilter] = useState<Set<string>>(new Set());
+  const [showFilterPopover, setShowFilterPopover] = useState(false);
+  const filterBtnRef = useRef<HTMLButtonElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
 
   const selectionMode = selectedIds.size > 0;
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }
 
   const loadData = useCallback(async () => {
     if (!providerId) return;
@@ -81,26 +102,91 @@ export default function ScribePanel() {
   }, [loadData, activeSession?.id]);
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return sessions;
-    const q = search.toLowerCase();
-    return sessions.filter((s) => {
-      const patient = s.patientId ? patients[s.patientId] : null;
-      const name = patient
-        ? `${patient.firstName} ${patient.lastName}`.toLowerCase()
-        : "";
-      return (
-        name.includes(q) ||
-        (s.summary && s.summary.toLowerCase().includes(q))
-      );
-    });
-  }, [sessions, patients, search]);
+    let result = sessions;
 
-  // Group filtered sessions by date
+    // Apply date filter
+    if (dateFilter.type === "preset") {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - dateFilter.days);
+      result = result.filter((s) => new Date(s.createdAt) >= cutoff);
+    } else if (dateFilter.type === "custom") {
+      const start = dateFilter.start;
+      const end = new Date(dateFilter.end);
+      end.setHours(23, 59, 59, 999);
+      result = result.filter((s) => {
+        const d = new Date(s.createdAt);
+        return d >= start && d <= end;
+      });
+    }
+
+    // Apply patient filter
+    if (patientFilter.size > 0) {
+      result = result.filter(
+        (s) => s.patientId !== null && patientFilter.has(s.patientId)
+      );
+    }
+
+    // Apply search
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((s) => {
+        const patient = s.patientId ? patients[s.patientId] : null;
+        const name = patient
+          ? `${patient.firstName} ${patient.lastName}`.toLowerCase()
+          : "";
+        return (
+          (s.title && s.title.toLowerCase().includes(q)) ||
+          name.includes(q) ||
+          (s.summary && s.summary.toLowerCase().includes(q))
+        );
+      });
+    }
+
+    return result;
+  }, [sessions, patients, search, dateFilter, patientFilter]);
+
+  // Sort filtered sessions
+  const sorted = useMemo(() => {
+    const list = [...filtered];
+    const dir = sortDirection === "asc" ? 1 : -1;
+
+    function sessionName(s: Session): string {
+      if (s.title) return s.title.toLowerCase();
+      if (s.patientId) {
+        const p = patients[s.patientId];
+        if (p) return `${p.firstName} ${p.lastName}`.toLowerCase();
+      }
+      return "";
+    }
+
+    list.sort((a, b) => {
+      let cmp = 0;
+      switch (sortField) {
+        case "createdAt":
+          cmp = a.createdAt.localeCompare(b.createdAt);
+          break;
+        case "updatedAt":
+          cmp = a.updatedAt.localeCompare(b.updatedAt);
+          break;
+        case "name":
+          cmp = sessionName(a).localeCompare(sessionName(b));
+          break;
+        case "status":
+          cmp = a.status.localeCompare(b.status);
+          break;
+      }
+      return cmp * dir;
+    });
+    return list;
+  }, [filtered, sortField, sortDirection, patients]);
+
+  // Group sorted sessions by date
   const grouped = useMemo(() => {
     const groups: { label: string; sessions: Session[] }[] = [];
     let currentLabel = "";
-    for (const session of filtered) {
-      const label = getDateLabel(session.createdAt);
+    const dateField = sortField === "updatedAt" ? "updatedAt" : "createdAt";
+    for (const session of sorted) {
+      const label = getDateLabel(session[dateField]);
       if (label !== currentLabel) {
         groups.push({ label, sessions: [session] });
         currentLabel = label;
@@ -109,7 +195,7 @@ export default function ScribePanel() {
       }
     }
     return groups;
-  }, [filtered]);
+  }, [sorted, sortField]);
 
   function getPatientName(session: Session): string | null {
     if (!session.patientId) return null;
@@ -179,6 +265,69 @@ export default function ScribePanel() {
             className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-3 text-sm placeholder:text-gray-400 focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-end gap-1 px-3 pb-2">
+        <button
+          ref={filterBtnRef}
+          onClick={() => {
+            setShowFilterPopover((v) => !v);
+            setShowSortPopover(false);
+          }}
+          className={`rounded-md p-1.5 transition-colors ${
+            showFilterPopover || dateFilter.type !== "all" || patientFilter.size > 0
+              ? "bg-gray-100 text-gray-700"
+              : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+          }`}
+          title="Filter"
+        >
+          <ListFilter className="h-4 w-4" />
+        </button>
+        {showFilterPopover && (
+          <ScribePanelFilterPopover
+            anchorEl={filterBtnRef.current}
+            dateFilter={dateFilter}
+            onDateFilterChange={setDateFilter}
+            patients={patients}
+            patientFilter={patientFilter}
+            onPatientFilterChange={setPatientFilter}
+            onClose={() => setShowFilterPopover(false)}
+          />
+        )}
+        <button
+          ref={sortBtnRef}
+          onClick={() => {
+            setShowSortPopover((v) => !v);
+            setShowFilterPopover(false);
+          }}
+          className={`rounded-md p-1.5 transition-colors ${
+            showSortPopover || sortField !== "createdAt" || sortDirection !== "desc"
+              ? "bg-gray-100 text-gray-700"
+              : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+          }`}
+          title="Sort"
+        >
+          <ArrowUpDown className="h-4 w-4" />
+        </button>
+        {showSortPopover && (
+          <ScribePanelSortPopover
+            anchorEl={sortBtnRef.current}
+            field={sortField}
+            direction={sortDirection}
+            onFieldChange={setSortField}
+            onDirectionChange={setSortDirection}
+            onClose={() => setShowSortPopover(false)}
+          />
+        )}
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors disabled:opacity-50"
+          title="Refresh"
+        >
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+        </button>
       </div>
 
       {/* Session list */}
