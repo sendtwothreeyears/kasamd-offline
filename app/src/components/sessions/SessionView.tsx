@@ -97,6 +97,7 @@ export default function SessionView() {
   /** Lexical JSON for the currently active note tab (loaded from session_notes). */
   const [activeNoteContent, setActiveNoteContent] = useState<SerializedEditorState | null>(null);
   const [showAddNoteModal, setShowAddNoteModal] = useState(false);
+  const [noteLoading, setNoteLoading] = useState(false);
   const [noteMenu, setNoteMenu] = useState<{ noteId: string; anchor: HTMLElement } | null>(null);
   const [confirmDeleteNote, setConfirmDeleteNote] = useState<string | null>(null);
   const [confirmRegenerateNote, setConfirmRegenerateNote] = useState<string | null>(null);
@@ -251,13 +252,35 @@ export default function SessionView() {
     })();
   }, [activeSession?.id]);
 
-  // Load note content when switching to a note tab
+  // Flush pending save and load note content when switching to a note tab
   useEffect(() => {
+    // Flush any pending save from the previous tab
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const pending = pendingSaveRef.current;
+    if (pending) {
+      if (pending.field.startsWith("note:")) {
+        const nid = pending.field.slice(5);
+        db.updateSessionNote(nid, JSON.stringify(pending.state)).catch((err) =>
+          console.error("Failed to flush note save on tab switch:", err),
+        );
+      } else {
+        db.updateSession(pending.sessionId, { [pending.field]: pending.state }).catch((err) =>
+          console.error("Failed to flush save on tab switch:", err),
+        );
+      }
+      pendingSaveRef.current = null;
+    }
+
     const nid = getNoteId(activeTab);
     if (!nid) {
       setActiveNoteContent(null);
+      setNoteLoading(false);
       return;
     }
+    setNoteLoading(true);
     (async () => {
       try {
         const note = await db.getSessionNote(nid);
@@ -268,9 +291,11 @@ export default function SessionView() {
         }
       } catch {
         setActiveNoteContent(null);
+      } finally {
+        setNoteLoading(false);
       }
     })();
-  }, [activeTab]);
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!activeSession?.patientId) {
@@ -951,6 +976,8 @@ export default function SessionView() {
         onDeleteRequest={() => setConfirmDelete(true)}
         onDeleteConfirm={() => { setConfirmDelete(false); handleDelete(); }}
         onDeleteCancel={() => setConfirmDelete(false)}
+        hasTranscript={hasCompletedTranscript}
+        onAddNote={() => setShowAddNoteModal(true)}
       />
 
       <SessionTabBar
@@ -976,7 +1003,11 @@ export default function SessionView() {
       )}
 
       <div className={`min-h-0 flex-1 pt-2${!showEntityHighlights ? " entity-highlights-off" : ""}`}>
-        {activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
+        {noteLoading && getNoteId(activeTab) !== null ? (
+          <div className="flex items-center justify-center py-16 text-sm text-gray-400">
+            Loading note...
+          </div>
+        ) : activeTab === "transcription" && (isLiveTranscribing || finalTranscript || (liveTranscript && !activeSession.rawTranscript)) ? (
           <TranscriptPanel
             rawTranscript={activeSession.rawTranscript}
             liveTranscript={liveTranscript}
