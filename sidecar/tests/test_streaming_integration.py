@@ -454,6 +454,73 @@ class TestNoteGeneration:
         assert "Patient presents" in note["content"]
         await ws.close()
 
+    async def test_generate_note_with_note_id_echoes_in_all_messages(self, ws_server):
+        """When note_id is provided, it should be echoed in note_progress, note_chunk, and note."""
+        ws = await _connect(ws_server)
+        await _recv_json(ws)  # status
+
+        await ws.send(json.dumps({
+            "type": protocol.GENERATE_NOTE,
+            "session_id": "note-id-1",
+            "note_id": "abc-123",
+            "transcript": "Patient presents with headache for three days.",
+            "template": "SOAP",
+        }))
+
+        msgs = await _drain_messages(ws, timeout=3.0)
+
+        # All note-related messages should have note_id
+        for m in msgs:
+            if m["type"] in (protocol.NOTE_PROGRESS, protocol.NOTE_CHUNK, protocol.NOTE):
+                assert m.get("note_id") == "abc-123", (
+                    f"{m['type']} missing or wrong note_id: {m}"
+                )
+
+        # Verify we got the full flow
+        types = [m["type"] for m in msgs]
+        assert protocol.NOTE_PROGRESS in types
+        assert protocol.NOTE in types
+        await ws.close()
+
+    async def test_generate_note_without_note_id_omits_it(self, ws_server):
+        """When note_id is NOT provided, responses should not include note_id."""
+        ws = await _connect(ws_server)
+        await _recv_json(ws)  # status
+
+        await ws.send(json.dumps({
+            "type": protocol.GENERATE_NOTE,
+            "session_id": "note-no-id",
+            "transcript": "Patient presents with headache for three days.",
+            "template": "SOAP",
+        }))
+
+        msgs = await _drain_messages(ws, timeout=3.0)
+
+        for m in msgs:
+            if m["type"] in (protocol.NOTE_PROGRESS, protocol.NOTE_CHUNK, protocol.NOTE):
+                assert "note_id" not in m, (
+                    f"{m['type']} should not have note_id when not provided: {m}"
+                )
+        await ws.close()
+
+    async def test_generate_note_error_includes_note_id(self, ws_server):
+        """Error response should include note_id when it was provided in the request."""
+        ws = await _connect(ws_server)
+        await _recv_json(ws)  # status
+
+        await ws.send(json.dumps({
+            "type": protocol.GENERATE_NOTE,
+            "session_id": "note-err-id",
+            "note_id": "err-456",
+            # Missing transcript — should trigger error
+        }))
+
+        msg = await _recv_json(ws)
+        assert msg["type"] == protocol.ERROR
+        assert msg.get("note_id") == "err-456"
+        assert "transcript" in msg["message"]
+        await ws.close()
+
     async def test_generate_note_without_transcript_returns_error(self, ws_server):
         ws = await _connect(ws_server)
         await _recv_json(ws)  # status
