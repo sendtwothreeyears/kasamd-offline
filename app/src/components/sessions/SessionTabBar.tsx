@@ -130,8 +130,8 @@ export default function SessionTabBar({
         );
       })}
 
-      {/* '+' button — only visible after at least one note has been generated */}
-      {onAddNote && hasGeneratedNote && (
+      {/* '+' button — only visible after transcript has been generated */}
+      {onAddNote && hasTranscript && (
         <div className="flex items-center shrink-0">
           <Separator />
           <button
