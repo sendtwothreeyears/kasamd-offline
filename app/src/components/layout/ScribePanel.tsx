@@ -268,7 +268,10 @@ export default function ScribePanel() {
       <div className="flex items-center justify-end gap-1 px-3 pb-2">
         <div className="relative">
           <button
-            onClick={() => setShowFilterPopover((v) => !v)}
+            onClick={() => {
+              setShowFilterPopover((v) => !v);
+              setShowSortPopover(false);
+            }}
             className={`rounded-md p-1.5 transition-colors ${
               showFilterPopover || dateFilter.type !== "all" || patientFilter.size > 0
                 ? "bg-gray-100 text-gray-700"
@@ -291,9 +294,12 @@ export default function ScribePanel() {
         </div>
         <div className="relative">
           <button
-            onClick={() => setShowSortPopover((v) => !v)}
+            onClick={() => {
+              setShowSortPopover((v) => !v);
+              setShowFilterPopover(false);
+            }}
             className={`rounded-md p-1.5 transition-colors ${
-              showSortPopover
+              showSortPopover || sortField !== "createdAt" || sortDirection !== "desc"
                 ? "bg-gray-100 text-gray-700"
                 : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
             }`}
@@ -312,7 +318,7 @@ export default function ScribePanel() {
           )}
         </div>
         <button
-          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          className="rounded-md p-1.5 text-gray-500 transition-colors cursor-default"
           title="Search"
         >
           <Search className="h-4 w-4" />
