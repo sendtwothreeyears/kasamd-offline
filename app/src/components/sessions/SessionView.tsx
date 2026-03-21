@@ -970,8 +970,8 @@ export default function SessionView() {
         showTranscription={!!activeSession.rawTranscript || isLiveTranscribing}
         noteTabs={noteTabs}
         onAddNote={() => setShowAddNoteModal(true)}
+        onNewSmartDictation={() => setShowAddNoteModal(true)}
         hasTranscript={hasCompletedTranscript}
-        hasGeneratedNote={noteTabs.length > 0}
       />
 
       {/* Patient context (read-only) — shown above editor on context tab */}

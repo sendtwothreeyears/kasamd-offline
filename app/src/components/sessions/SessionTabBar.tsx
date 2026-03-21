@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from "react";
 import type { SessionNoteTab } from "../../types";
 
 /**
@@ -25,12 +26,12 @@ interface SessionTabBarProps {
   showTranscription?: boolean;
   /** Dynamic note tabs to render. */
   noteTabs: SessionNoteTab[];
-  /** Called when the '+' button is clicked to add a new note tab. */
+  /** Called when "Create a document" is selected from the '+' popover. */
   onAddNote?: () => void;
-  /** Whether a completed transcript exists (disables '+' when false). */
+  /** Called when "New smart dictation" is selected from the '+' popover. */
+  onNewSmartDictation?: () => void;
+  /** Whether a completed transcript exists (controls '+' visibility). */
   hasTranscript?: boolean;
-  /** Whether at least one note has been generated (hides '+' when false). */
-  hasGeneratedNote?: boolean;
 }
 
 function Separator() {
@@ -81,8 +82,8 @@ export default function SessionTabBar({
   showTranscription = false,
   noteTabs,
   onAddNote,
+  onNewSmartDictation,
   hasTranscript = true,
-  hasGeneratedNote = false,
 }: SessionTabBarProps) {
   const staticTabs: { id: SessionTab; label: string; icon: string; show: boolean }[] = [
     { id: "context", label: "Context", icon: "/icons/context.svg", show: true },
@@ -130,26 +131,115 @@ export default function SessionTabBar({
         );
       })}
 
-      {/* '+' button — only visible after transcript has been generated */}
-      {onAddNote && hasTranscript && (
+      {/* '+' button with popover — only visible after transcript has been generated */}
+      {(onAddNote || onNewSmartDictation) && hasTranscript && (
         <div className="flex items-center shrink-0">
           <Separator />
-          <button
-            onClick={onAddNote}
-            disabled={locked || !hasTranscript}
-            className={`flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors ${
-              locked || !hasTranscript
-                ? "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300"
-                : "border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
-            }`}
-            title={!hasTranscript ? "Record a transcript first" : "Add note"}
-          >
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-            </svg>
-          </button>
+          <AddNotePopover
+            disabled={locked}
+            onCreateDocument={onAddNote}
+            onNewSmartDictation={onNewSmartDictation}
+          />
         </div>
       )}
     </div>
+  );
+}
+
+/** Popover that appears when the '+' button is clicked. */
+function AddNotePopover({
+  disabled,
+  onCreateDocument,
+  onNewSmartDictation,
+}: {
+  disabled: boolean;
+  onCreateDocument?: () => void;
+  onNewSmartDictation?: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (isOpen && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setPosition({ top: rect.bottom + 4, left: rect.left });
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node) &&
+        buttonRef.current &&
+        !buttonRef.current.contains(e.target as Node)
+      ) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [isOpen]);
+
+  const act = (fn?: () => void) => {
+    if (!fn) return;
+    fn();
+    setIsOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={disabled}
+        className={`flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors ${
+          disabled
+            ? "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300"
+            : "border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+        }`}
+        title="Add note"
+      >
+        <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div
+          ref={menuRef}
+          style={{ position: "fixed", top: position.top, left: position.left }}
+          className="z-50 min-w-[200px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+        >
+          {onCreateDocument && (
+            <button
+              type="button"
+              onClick={() => act(onCreateDocument)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+              Create a document
+            </button>
+          )}
+          {onNewSmartDictation && (
+            <button
+              type="button"
+              onClick={() => act(onNewSmartDictation)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+              New smart dictation
+            </button>
+          )}
+        </div>
+      )}
+    </>
   );
 }
