@@ -133,6 +133,7 @@ export default function ScribePanel() {
           ? `${patient.firstName} ${patient.lastName}`.toLowerCase()
           : "";
         return (
+          (s.title && s.title.toLowerCase().includes(q)) ||
           name.includes(q) ||
           (s.summary && s.summary.toLowerCase().includes(q))
         );
