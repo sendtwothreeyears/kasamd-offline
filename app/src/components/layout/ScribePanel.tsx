@@ -1,22 +1,21 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Search, UserRound, Check, Trash2, CheckCheck } from "lucide-react";
+import {
+  Search,
+  UserRound,
+  Check,
+  Trash2,
+  CheckCheck,
+  ListFilter,
+  ArrowUpDown,
+  RefreshCw,
+} from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import * as db from "../../lib/db";
 import type { Session, Patient } from "../../types";
 
-/** Group sessions by date label: "Today", "Yesterday", or "MM/DD/YYYY". */
+/** Group sessions by date label in MM/DD/YYYY format. */
 function getDateLabel(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const sessionDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (sessionDate.getTime() === today.getTime()) return "Today";
-  if (sessionDate.getTime() === yesterday.getTime()) return "Yesterday";
-  return date.toLocaleDateString(undefined, {
+  return new Date(dateStr).toLocaleDateString("en-US", {
     month: "2-digit",
     day: "2-digit",
     year: "numeric",
@@ -51,8 +50,15 @@ export default function ScribePanel() {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const selectionMode = selectedIds.size > 0;
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }
 
   const loadData = useCallback(async () => {
     if (!providerId) return;
@@ -179,6 +185,36 @@ export default function ScribePanel() {
             className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-3 text-sm placeholder:text-gray-400 focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-end gap-1 px-3 pb-2">
+        <button
+          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          title="Filter"
+        >
+          <ListFilter className="h-4 w-4" />
+        </button>
+        <button
+          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          title="Sort"
+        >
+          <ArrowUpDown className="h-4 w-4" />
+        </button>
+        <button
+          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          title="Search"
+        >
+          <Search className="h-4 w-4" />
+        </button>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors disabled:opacity-50"
+          title="Refresh"
+        >
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+        </button>
       </div>
 
       {/* Session list */}
