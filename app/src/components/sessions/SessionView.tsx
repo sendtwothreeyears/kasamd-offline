@@ -24,6 +24,7 @@ import { lexicalToHtml } from "../../lib/lexical-to-html";
 import ContextAttachments, { type AttachmentWithStatus } from "./ContextAttachments";
 import QuickPatientModal from "../patients/QuickPatientModal";
 import TemplateSelectorModal from "../templates/TemplateSelectorModal";
+import ConfirmModal from "../ui/ConfirmModal";
 import Toast from "../ui/Toast";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { copyFile, mkdir, remove, stat, writeFile } from "@tauri-apps/plugin-fs";
@@ -96,6 +97,9 @@ export default function SessionView() {
   /** Lexical JSON for the currently active note tab (loaded from session_notes). */
   const [activeNoteContent, setActiveNoteContent] = useState<SerializedEditorState | null>(null);
   const [showAddNoteModal, setShowAddNoteModal] = useState(false);
+  const [noteMenu, setNoteMenu] = useState<{ noteId: string; anchor: HTMLElement } | null>(null);
+  const [confirmDeleteNote, setConfirmDeleteNote] = useState<string | null>(null);
+  const [confirmRegenerateNote, setConfirmRegenerateNote] = useState<string | null>(null);
 
   const {
     devices,
@@ -663,6 +667,37 @@ export default function SessionView() {
     }
   }, [activeSession, templates, generateNote, getContextText]);
 
+  /** Regenerate note: re-run generation on the given note tab using latest transcript. */
+  const handleRegenerateNote = useCallback(async (noteId: string) => {
+    setConfirmRegenerateNote(null);
+    if (!activeSession?.rawTranscript) return;
+    // Find the note's template to get its text
+    const note = await db.getSessionNote(noteId);
+    if (!note) return;
+    const tmpl = templates.find((t) => t.id === note.templateId);
+    const templateText = tmpl?.content
+      ? extractTextFromLexical(tmpl.content as SerializedEditorState)
+      : "";
+    setActiveTab(`note:${noteId}`);
+    generateNote(activeSession.id, noteId, activeSession.rawTranscript, templateText, getContextText());
+  }, [activeSession, templates, generateNote, getContextText]);
+
+  /** Delete a note tab and its DB row. */
+  const handleDeleteNote = useCallback(async (noteId: string) => {
+    setConfirmDeleteNote(null);
+    try {
+      await db.deleteSessionNote(noteId);
+      setNoteTabs((prev) => prev.filter((t) => t.id !== noteId));
+      // If we deleted the active tab, switch to context
+      if (getNoteId(activeTab) === noteId) {
+        setActiveTab("context");
+        setActiveNoteContent(null);
+      }
+    } catch (err) {
+      console.error("Failed to delete note:", err);
+    }
+  }, [activeTab]);
+
   if (!activeSession) {
     return (
       <div className="flex items-center justify-center py-16 text-sm text-gray-400">
@@ -925,6 +960,7 @@ export default function SessionView() {
         showTranscription={!!activeSession.rawTranscript || isLiveTranscribing}
         noteTabs={noteTabs}
         onAddNote={() => setShowAddNoteModal(true)}
+        onNoteMenu={(noteId, anchor) => setNoteMenu({ noteId, anchor })}
       />
 
       {/* Patient context (read-only) — shown above editor on context tab */}
@@ -1056,6 +1092,64 @@ export default function SessionView() {
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         onSelect={handleAddNote}
+      />
+
+      {/* Note tab dropdown menu */}
+      {noteMenu && (
+        <>
+          <div className="fixed inset-0 z-50" onClick={() => setNoteMenu(null)} />
+          <div
+            className="fixed z-50 min-w-[160px] rounded-md border bg-white py-1 shadow-lg"
+            style={{
+              top: noteMenu.anchor.getBoundingClientRect().bottom + 4,
+              left: noteMenu.anchor.getBoundingClientRect().left,
+            }}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+              onClick={() => {
+                const nid = noteMenu.noteId;
+                setNoteMenu(null);
+                setConfirmRegenerateNote(nid);
+              }}
+              disabled={!activeSession?.rawTranscript}
+            >
+              Regenerate
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
+              onClick={() => {
+                const nid = noteMenu.noteId;
+                setNoteMenu(null);
+                setConfirmDeleteNote(nid);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Confirm regenerate note */}
+      <ConfirmModal
+        open={!!confirmRegenerateNote}
+        onClose={() => setConfirmRegenerateNote(null)}
+        onConfirm={() => confirmRegenerateNote && handleRegenerateNote(confirmRegenerateNote)}
+        title="Regenerate note?"
+        message="This will replace the current note content with a fresh generation from the latest transcript."
+        confirmLabel="Regenerate"
+        variant="danger"
+      />
+
+      {/* Confirm delete note */}
+      <ConfirmModal
+        open={!!confirmDeleteNote}
+        onClose={() => setConfirmDeleteNote(null)}
+        onConfirm={() => confirmDeleteNote && handleDeleteNote(confirmDeleteNote)}
+        title="Delete note?"
+        message="This will permanently delete this note. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
       />
 
       {/* Toast notification */}
