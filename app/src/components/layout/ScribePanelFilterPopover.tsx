@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Calendar, ChevronRight, User } from "lucide-react";
+import { DayPicker } from "react-day-picker";
+import "react-day-picker/style.css";
 
 export type DateFilter =
   | { type: "all" }
@@ -26,6 +28,13 @@ export default function ScribePanelFilterPopover({
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [showDateMenu, setShowDateMenu] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [rangeStart, setRangeStart] = useState<Date | undefined>(
+    dateFilter.type === "custom" ? dateFilter.start : undefined
+  );
+  const [rangeEnd, setRangeEnd] = useState<Date | undefined>(
+    dateFilter.type === "custom" ? dateFilter.end : undefined
+  );
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -38,6 +47,22 @@ export default function ScribePanelFilterPopover({
   }, [onClose]);
 
   const isDateActive = dateFilter.type !== "all";
+  const isCustomActive = dateFilter.type === "custom";
+
+  function handleDayClick(day: Date) {
+    if (!rangeStart || (rangeStart && rangeEnd)) {
+      // Start new range
+      setRangeStart(day);
+      setRangeEnd(undefined);
+    } else {
+      // Complete range
+      const start = day < rangeStart ? day : rangeStart;
+      const end = day < rangeStart ? rangeStart : day;
+      setRangeStart(start);
+      setRangeEnd(end);
+      onDateFilterChange({ type: "custom", start, end });
+    }
+  }
 
   return (
     <div
@@ -47,7 +72,10 @@ export default function ScribePanelFilterPopover({
       {/* Date filter */}
       <div className="relative">
         <button
-          onClick={() => setShowDateMenu((v) => !v)}
+          onClick={() => {
+            setShowDateMenu((v) => !v);
+            setShowCalendar(false);
+          }}
           className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${
             isDateActive ? "text-gray-900 font-medium" : "text-gray-700"
           }`}
@@ -71,6 +99,7 @@ export default function ScribePanelFilterPopover({
                     } else {
                       onDateFilterChange({ type: "preset", days: preset.days });
                     }
+                    setShowCalendar(false);
                   }}
                   className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${
                     isActive ? "bg-primary/5 text-gray-900" : "text-gray-700"
@@ -83,6 +112,40 @@ export default function ScribePanelFilterPopover({
                 </button>
               );
             })}
+
+            <div className="my-1 border-t border-gray-100" />
+
+            <button
+              onClick={() => setShowCalendar((v) => !v)}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${
+                isCustomActive ? "bg-primary/5 text-gray-900" : "text-gray-700"
+              }`}
+            >
+              Custom date range
+              {isCustomActive && (
+                <span className="ml-auto text-xs">{"\u2713"}</span>
+              )}
+            </button>
+          </div>
+        )}
+
+        {showDateMenu && showCalendar && (
+          <div className="absolute left-full top-0 ml-[calc(11rem+0.25rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+            <DayPicker
+              mode="range"
+              numberOfMonths={2}
+              selected={
+                rangeStart
+                  ? { from: rangeStart, to: rangeEnd }
+                  : undefined
+              }
+              onDayClick={handleDayClick}
+              disabled={{ after: new Date() }}
+              classNames={{
+                root: "text-sm",
+                day: "h-8 w-8 text-center",
+              }}
+            />
           </div>
         )}
       </div>
