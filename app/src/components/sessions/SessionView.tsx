@@ -971,6 +971,7 @@ export default function SessionView() {
         noteTabs={noteTabs}
         onAddNote={() => setShowAddNoteModal(true)}
         hasTranscript={hasCompletedTranscript}
+        hasGeneratedNote={noteTabs.length > 0}
       />
 
       {/* Patient context (read-only) — shown above editor on context tab */}

@@ -29,6 +29,8 @@ interface SessionTabBarProps {
   onAddNote?: () => void;
   /** Whether a completed transcript exists (disables '+' when false). */
   hasTranscript?: boolean;
+  /** Whether at least one note has been generated (hides '+' when false). */
+  hasGeneratedNote?: boolean;
 }
 
 function Separator() {
@@ -80,6 +82,7 @@ export default function SessionTabBar({
   noteTabs,
   onAddNote,
   hasTranscript = true,
+  hasGeneratedNote = false,
 }: SessionTabBarProps) {
   const staticTabs: { id: SessionTab; label: string; icon: string; show: boolean }[] = [
     { id: "context", label: "Context", icon: "/icons/context.svg", show: true },
@@ -127,23 +130,24 @@ export default function SessionTabBar({
         );
       })}
 
-      {/* '+' button to add a note tab */}
-      {onAddNote && (
+      {/* "New Note" button — only visible after at least one note has been generated */}
+      {onAddNote && hasGeneratedNote && (
         <div className="flex items-center shrink-0">
           <Separator />
           <button
             onClick={onAddNote}
             disabled={locked || !hasTranscript}
-            className={`flex items-center justify-center rounded-md border border-dashed px-2 py-1.5 text-base font-medium transition-colors ${
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-base font-medium transition-colors ${
               locked || !hasTranscript
-                ? "cursor-not-allowed border-gray-200 text-gray-300"
-                : "border-gray-300 text-gray-400 hover:border-gray-400 hover:text-gray-600"
+                ? "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300"
+                : "border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
             }`}
             title={!hasTranscript ? "Record a transcript first" : "Add note"}
           >
             <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+              <path fillRule="evenodd" d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.621a1.5 1.5 0 00-.44-1.06l-4.12-4.122A1.5 1.5 0 0011.378 2H4.5zm4.75 6.75a.75.75 0 00-1.5 0v2h-2a.75.75 0 000 1.5h2v2a.75.75 0 001.5 0v-2h2a.75.75 0 000-1.5h-2v-2z" clipRule="evenodd" />
             </svg>
+            New Note
           </button>
         </div>
       )}
