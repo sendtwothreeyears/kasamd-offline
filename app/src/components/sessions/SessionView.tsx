@@ -4,7 +4,7 @@ import * as db from "../../lib/db";
 import type { Patient, Template } from "../../types";
 import type { SerializedEditorState } from "lexical";
 import SessionTopBar from "./SessionTopBar";
-import SessionTabBar, { type SessionTab } from "./SessionTabBar";
+import SessionTabBar, { type SessionTab, getNoteId } from "./SessionTabBar";
 import SessionEditor from "./SessionEditor";
 import TranscriptPanel from "./TranscriptPanel";
 import NoteToolbar from "./NoteToolbar";
@@ -51,18 +51,18 @@ function extractTextFromLexical(state: SerializedEditorState): string {
   return lines.join("").trim();
 }
 
-/** Maps each tab to the Session field it reads/writes. */
-const TAB_FIELD: Record<SessionTab, "context" | "transcript" | "notes"> = {
-  context: "context",
-  transcription: "transcript",
-  note: "notes",
-};
+/** Maps a tab to the Session field it reads/writes. Note tabs map to "notes" (legacy single-note). */
+function getTabField(tab: SessionTab): "context" | "transcript" | "notes" {
+  if (tab === "context") return "context";
+  if (tab === "transcription") return "transcript";
+  return "notes"; // note:* tabs
+}
 
-const TAB_PLACEHOLDER: Record<SessionTab, string> = {
-  context: "Add any additional context about the patient...",
-  transcription: "Transcription will appear here during recording...",
-  note: "Generated note will appear here...",
-};
+function getTabPlaceholder(tab: SessionTab): string {
+  if (tab === "context") return "Add any additional context about the patient...";
+  if (tab === "transcription") return "Transcription will appear here during recording...";
+  return "Generated note will appear here...";
+}
 
 const SAVE_DEBOUNCE_MS = 800;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -388,7 +388,7 @@ export default function SessionView() {
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  // Save generated note to DB and update store
+  // Save generated note to DB and update store, then regenerate title
   useEffect(() => {
     onNoteGenerated(async (content) => {
       if (!activeSession) return;
@@ -398,13 +398,33 @@ export default function SessionView() {
           typeof content === "string"
             ? markdownToLexical(content)
             : (content as SerializedEditorState);
-        await db.updateSession(activeSession.id, { notes: lexicalState });
+        // Update store FIRST so the editor remounts with fresh content
+        // (setIsStreaming(false) triggers a re-render that reads activeSession.notes)
         mergeActiveSession(activeSession.id, { notes: lexicalState });
+        await db.updateSession(activeSession.id, { notes: lexicalState });
+
+        // Regenerate session title to reflect the current transcript
+        const transcript = activeSession.rawTranscript;
+        if (transcript) {
+          const sid = activeSession.id;
+          send(JSON.stringify({ type: "generate_title", session_id: sid, transcript }));
+          const unsub = onMessage((raw: string) => {
+            try {
+              const data = JSON.parse(raw);
+              if (data.type === "title" && data.session_id === sid) {
+                unsub();
+                const title = data.title as string;
+                db.updateSession(sid, { title }).catch((e) => console.error("Failed to save title:", e));
+                mergeActiveSession(sid, { title });
+              }
+            } catch { /* ignore parse errors */ }
+          });
+        }
       } catch (err) {
         console.error("Failed to save generated note:", err);
       }
     });
-  }, [activeSession, mergeActiveSession, onNoteGenerated]);
+  }, [activeSession, mergeActiveSession, onNoteGenerated, send, onMessage]);
 
   // Persist refined transcript to DB so note generation uses the best version
   useEffect(() => {
@@ -487,7 +507,7 @@ export default function SessionView() {
   const handleEditorChange = useCallback(
     (state: SerializedEditorState) => {
       if (!activeSession) return;
-      const field = TAB_FIELD[activeTab];
+      const field = getTabField(activeTab);
 
       pendingSaveRef.current = { sessionId: activeSession.id, field, state };
 
@@ -523,9 +543,9 @@ export default function SessionView() {
     }
   }
 
-  const field = TAB_FIELD[activeTab];
+  const field = getTabField(activeTab);
   // While streaming on the note tab, show the live preview; otherwise show persisted state
-  const noteIsStreaming = activeTab === "note" && isStreaming && streamPreview;
+  const noteIsStreaming = getNoteId(activeTab) !== null && isStreaming && streamPreview;
   const initialState = noteIsStreaming
     ? streamPreview
     : ((activeSession[field] as SerializedEditorState | null) ?? null);
@@ -533,7 +553,7 @@ export default function SessionView() {
   const hasCompletedTranscript = !!activeSession.rawTranscript && !isLiveTranscribing;
   const isReadOnly =
     (activeTab === "transcription" && !hasCompletedTranscript) ||
-    (activeTab === "note" && isStreaming);
+    (getNoteId(activeTab) !== null && isStreaming);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (activeTab !== "context") return;
@@ -757,7 +777,13 @@ export default function SessionView() {
         onDeleteCancel={() => setConfirmDelete(false)}
       />
 
-      <SessionTabBar activeTab={activeTab} onTabChange={setActiveTab} locked={isLiveTranscribing} />
+      <SessionTabBar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        locked={isLiveTranscribing}
+        showTranscription={!!activeSession.rawTranscript || isLiveTranscribing}
+        noteTabs={activeSession.notes ? [{ id: "legacy", templateName: "Note" }] : []}
+      />
 
       {/* Patient context (read-only) — shown above editor on context tab */}
       {activeTab === "context" && patient?.context && (
@@ -789,9 +815,9 @@ export default function SessionView() {
             onChange={isReadOnly ? undefined : handleEditorChange}
             readOnly={isReadOnly}
             streaming={!!noteIsStreaming}
-            placeholder={TAB_PLACEHOLDER[activeTab]}
+            placeholder={getTabPlaceholder(activeTab)}
             header={
-              activeTab === "note"
+              getNoteId(activeTab) !== null
                 ? confirmRegenerate
                   ? (
                     <div className="flex items-center justify-end gap-2 px-4 pt-3">
