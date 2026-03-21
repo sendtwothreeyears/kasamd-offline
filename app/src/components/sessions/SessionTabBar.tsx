@@ -29,8 +29,6 @@ interface SessionTabBarProps {
   onAddNote?: () => void;
   /** Whether a completed transcript exists (disables '+' when false). */
   hasTranscript?: boolean;
-  /** Called when the dropdown menu is requested on a note tab. */
-  onNoteMenu?: (noteId: string, anchor: HTMLElement) => void;
 }
 
 function Separator() {
@@ -82,7 +80,6 @@ export default function SessionTabBar({
   noteTabs,
   onAddNote,
   hasTranscript = true,
-  onNoteMenu,
 }: SessionTabBarProps) {
   const staticTabs: { id: SessionTab; label: string; icon: string; show: boolean }[] = [
     { id: "context", label: "Context", icon: "/icons/context.svg", show: true },
@@ -119,30 +116,13 @@ export default function SessionTabBar({
         return (
           <div key={nt.id} className="flex items-center shrink-0">
             <Separator />
-            <div className="flex items-center gap-0.5">
-              <TabButton
-                active={isActive}
-                disabled={disabled}
-                onClick={() => onTabChange(tabId)}
-                icon="/icons/note.svg"
-                label={nt.templateName}
-              />
-              {onNoteMenu && (
-                <button
-                  onClick={(e) => onNoteMenu(nt.id, e.currentTarget)}
-                  className={`rounded p-0.5 transition-colors ${
-                    isActive
-                      ? "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-                      : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                  }`}
-                  title="Note options"
-                >
-                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" />
-                  </svg>
-                </button>
-              )}
-            </div>
+            <TabButton
+              active={isActive}
+              disabled={disabled}
+              onClick={() => onTabChange(tabId)}
+              icon="/icons/note.svg"
+              label={nt.templateName}
+            />
           </div>
         );
       })}

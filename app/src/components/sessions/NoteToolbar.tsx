@@ -9,6 +9,7 @@ interface NoteToolbarProps {
   onCopy: () => void;
   onExportPDF: () => void;
   onRegenerate: () => void;
+  onDelete?: () => void;
   canGenerate: boolean;
   templates: Template[];
   selectedTemplateId: string | null;
@@ -24,6 +25,7 @@ export default function NoteToolbar({
   onCopy,
   onExportPDF,
   onRegenerate,
+  onDelete,
   canGenerate,
   templates,
   selectedTemplateId,
@@ -76,6 +78,7 @@ export default function NoteToolbar({
           onCopy={onCopy}
           onExportPDF={onExportPDF}
           onRegenerate={onRegenerate}
+          onDelete={onDelete}
           canGenerate={canGenerate}
         />
         {(isGenerating || isExporting) && (
@@ -128,6 +131,7 @@ function OptionsMenu({
   onCopy,
   onExportPDF,
   onRegenerate,
+  onDelete,
   canGenerate,
 }: {
   hasNote: boolean;
@@ -136,6 +140,7 @@ function OptionsMenu({
   onCopy: () => void;
   onExportPDF: () => void;
   onRegenerate: () => void;
+  onDelete?: () => void;
   canGenerate: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -226,6 +231,19 @@ function OptionsMenu({
           >
             Regenerate
           </button>
+
+          {onDelete && (
+            <>
+              <div className="my-1 border-t border-gray-200" />
+              <button
+                type="button"
+                onClick={() => act(onDelete)}
+                className="w-full px-4 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50"
+              >
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
