@@ -16,6 +16,9 @@ import ScribePanelSortPopover, {
   type SortField,
   type SortDirection,
 } from "./ScribePanelSortPopover";
+import ScribePanelFilterPopover, {
+  type DateFilter,
+} from "./ScribePanelFilterPopover";
 
 /** Group sessions by date label in MM/DD/YYYY format. */
 function getDateLabel(dateStr: string): string {
@@ -58,6 +61,8 @@ export default function ScribePanel() {
   const [sortField, setSortField] = useState<SortField>("createdAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [showSortPopover, setShowSortPopover] = useState(false);
+  const [dateFilter, setDateFilter] = useState<DateFilter>({ type: "all" });
+  const [showFilterPopover, setShowFilterPopover] = useState(false);
 
   const selectionMode = selectedIds.size > 0;
 
@@ -94,19 +99,40 @@ export default function ScribePanel() {
   }, [loadData, activeSession?.id]);
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return sessions;
-    const q = search.toLowerCase();
-    return sessions.filter((s) => {
-      const patient = s.patientId ? patients[s.patientId] : null;
-      const name = patient
-        ? `${patient.firstName} ${patient.lastName}`.toLowerCase()
-        : "";
-      return (
-        name.includes(q) ||
-        (s.summary && s.summary.toLowerCase().includes(q))
-      );
-    });
-  }, [sessions, patients, search]);
+    let result = sessions;
+
+    // Apply date filter
+    if (dateFilter.type === "preset") {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - dateFilter.days);
+      result = result.filter((s) => new Date(s.createdAt) >= cutoff);
+    } else if (dateFilter.type === "custom") {
+      const start = dateFilter.start;
+      const end = new Date(dateFilter.end);
+      end.setHours(23, 59, 59, 999);
+      result = result.filter((s) => {
+        const d = new Date(s.createdAt);
+        return d >= start && d <= end;
+      });
+    }
+
+    // Apply search
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((s) => {
+        const patient = s.patientId ? patients[s.patientId] : null;
+        const name = patient
+          ? `${patient.firstName} ${patient.lastName}`.toLowerCase()
+          : "";
+        return (
+          name.includes(q) ||
+          (s.summary && s.summary.toLowerCase().includes(q))
+        );
+      });
+    }
+
+    return result;
+  }, [sessions, patients, search, dateFilter]);
 
   // Sort filtered sessions
   const sorted = useMemo(() => {
@@ -232,12 +258,26 @@ export default function ScribePanel() {
 
       {/* Toolbar */}
       <div className="flex items-center justify-end gap-1 px-3 pb-2">
-        <button
-          className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
-          title="Filter"
-        >
-          <ListFilter className="h-4 w-4" />
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowFilterPopover((v) => !v)}
+            className={`rounded-md p-1.5 transition-colors ${
+              showFilterPopover || dateFilter.type !== "all"
+                ? "bg-gray-100 text-gray-700"
+                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            }`}
+            title="Filter"
+          >
+            <ListFilter className="h-4 w-4" />
+          </button>
+          {showFilterPopover && (
+            <ScribePanelFilterPopover
+              dateFilter={dateFilter}
+              onDateFilterChange={setDateFilter}
+              onClose={() => setShowFilterPopover(false)}
+            />
+          )}
+        </div>
         <div className="relative">
           <button
             onClick={() => setShowSortPopover((v) => !v)}
