@@ -987,6 +987,7 @@ export default function SessionView() {
         showTranscription={!!activeSession.rawTranscript || isLiveTranscribing}
         noteTabs={noteTabs}
         onAddNote={() => setShowAddNoteModal(true)}
+        hasTranscript={hasCompletedTranscript}
         onNoteMenu={(noteId, anchor) => setNoteMenu({ noteId, anchor })}
       />
 

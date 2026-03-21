@@ -27,6 +27,8 @@ interface SessionTabBarProps {
   noteTabs: SessionNoteTab[];
   /** Called when the '+' button is clicked to add a new note tab. */
   onAddNote?: () => void;
+  /** Whether a completed transcript exists (disables '+' when false). */
+  hasTranscript?: boolean;
   /** Called when the dropdown menu is requested on a note tab. */
   onNoteMenu?: (noteId: string, anchor: HTMLElement) => void;
 }
@@ -79,6 +81,7 @@ export default function SessionTabBar({
   showTranscription = false,
   noteTabs,
   onAddNote,
+  hasTranscript = true,
   onNoteMenu,
 }: SessionTabBarProps) {
   const staticTabs: { id: SessionTab; label: string; icon: string; show: boolean }[] = [
@@ -150,13 +153,13 @@ export default function SessionTabBar({
           <Separator />
           <button
             onClick={onAddNote}
-            disabled={locked}
+            disabled={locked || !hasTranscript}
             className={`flex items-center justify-center rounded-md border border-dashed px-2 py-1.5 text-base font-medium transition-colors ${
-              locked
+              locked || !hasTranscript
                 ? "cursor-not-allowed border-gray-200 text-gray-300"
                 : "border-gray-300 text-gray-400 hover:border-gray-400 hover:text-gray-600"
             }`}
-            title="Add note"
+            title={!hasTranscript ? "Record a transcript first" : "Add note"}
           >
             <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
               <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
