@@ -321,12 +321,6 @@ export default function ScribePanel() {
           />
         )}
         <button
-          className="rounded-md p-1.5 text-gray-500 transition-colors cursor-default"
-          title="Search"
-        >
-          <Search className="h-4 w-4" />
-        </button>
-        <button
           onClick={handleRefresh}
           disabled={refreshing}
           className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors disabled:opacity-50"
