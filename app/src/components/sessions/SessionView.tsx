@@ -141,6 +141,7 @@ export default function SessionView() {
     error: noteError,
     generateNote,
     onNoteGenerated,
+    activeNoteId,
   } = useNoteGeneration();
 
   const { connectionState, send, onMessage } = useSidecar();
@@ -463,20 +464,22 @@ export default function SessionView() {
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  // Save generated note to DB and update store, then regenerate title
+  // Save generated note to session_notes DB and update local state, then regenerate title
   useEffect(() => {
-    onNoteGenerated(async (content) => {
+    onNoteGenerated(async (noteId, content) => {
       if (!activeSession) return;
       try {
-        // Sidecar sends markdown (string); legacy data is Lexical JSON (object)
         const lexicalState =
           typeof content === "string"
             ? markdownToLexical(content)
             : (content as SerializedEditorState);
-        // Update store FIRST so the editor remounts with fresh content
-        // (setIsStreaming(false) triggers a re-render that reads activeSession.notes)
-        mergeActiveSession(activeSession.id, { notes: lexicalState });
-        await db.updateSession(activeSession.id, { notes: lexicalState });
+
+        // Save to session_notes table
+        await db.updateSessionNote(noteId, JSON.stringify(lexicalState));
+        // Update local state if this note tab is currently active
+        if (getNoteId(activeTab) === noteId) {
+          setActiveNoteContent(lexicalState);
+        }
 
         // Regenerate session title to reflect the current transcript
         const transcript = activeSession.rawTranscript;
@@ -499,7 +502,7 @@ export default function SessionView() {
         console.error("Failed to save generated note:", err);
       }
     });
-  }, [activeSession, mergeActiveSession, onNoteGenerated, send, onMessage]);
+  }, [activeSession, activeTab, mergeActiveSession, onNoteGenerated, send, onMessage]);
 
   // Persist refined transcript to DB so note generation uses the best version
   useEffect(() => {
@@ -580,11 +583,18 @@ export default function SessionView() {
             }
           } catch { /* ignore parse errors */ }
         });
+
+        // Auto-generate note on default note tab
+        if (noteTabs.length > 0) {
+          const defaultNoteTab = noteTabs[0];
+          setActiveTab(`note:${defaultNoteTab.id}`);
+          generateNote(sid, defaultNoteTab.id, text, getSelectedTemplateText(), getContextText());
+        }
       } catch (err) {
         console.error("Failed to save rawTranscript:", err);
       }
     }
-  }, [stop, stopTranscription, activeSession, mergeActiveSession, send, onMessage]);
+  }, [stop, stopTranscription, activeSession, mergeActiveSession, send, onMessage, noteTabs, generateNote, getSelectedTemplateText, getContextText]);
 
   const handleEditorChange = useCallback(
     (state: SerializedEditorState) => {
@@ -643,7 +653,8 @@ export default function SessionView() {
 
   const field = getTabField(activeTab);
   // While streaming on the note tab, show the live preview; otherwise show persisted state
-  const noteIsStreaming = getNoteId(activeTab) !== null && isStreaming && streamPreview;
+  const currentNoteId = getNoteId(activeTab);
+  const noteIsStreaming = currentNoteId !== null && isStreaming && activeNoteId === currentNoteId && streamPreview;
   const initialState = noteIsStreaming
     ? streamPreview
     : getNoteId(activeTab) !== null
@@ -926,7 +937,7 @@ export default function SessionView() {
                         type="button"
                         onClick={() => {
                           setConfirmRegenerate(false);
-                          generateNote(activeSession.id, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText());
+                          { const nid = getNoteId(activeTab); if (nid) generateNote(activeSession.id, nid, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText()); }
                         }}
                         className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
                       >
@@ -943,7 +954,7 @@ export default function SessionView() {
                   )
                   : (
                     <NoteToolbar
-                      hasNote={!!activeSession.notes}
+                      hasNote={!!activeNoteContent}
                       isGenerating={isGenerating}
                       isExporting={isExporting}
                       canGenerate={!!activeSession.rawTranscript}
@@ -954,20 +965,19 @@ export default function SessionView() {
                       showEntityHighlights={showEntityHighlights}
                       onToggleEntityHighlights={toggleEntityHighlights}
                       onCopy={() => {
-                        const notes = activeSession.notes as SerializedEditorState | null;
-                        if (!notes) return;
+                        if (!activeNoteContent) return;
                         try {
-                          const text = extractTextFromLexical(notes);
+                          const text = extractTextFromLexical(activeNoteContent);
                           navigator.clipboard.writeText(text);
                         } catch (err) {
                           console.error("Failed to copy note:", err);
                         }
                       }}
                       onRegenerate={() => {
-                        if (activeSession.notes) {
+                        if (activeNoteContent) {
                           setConfirmRegenerate(true);
                         } else {
-                          generateNote(activeSession.id, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText());
+                          { const nid = getNoteId(activeTab); if (nid) generateNote(activeSession.id, nid, activeSession.rawTranscript ?? "", getSelectedTemplateText(), getContextText()); }
                         }
                       }}
                     />
